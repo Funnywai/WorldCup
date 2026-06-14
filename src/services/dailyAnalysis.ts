@@ -155,16 +155,12 @@ export async function analyzeAndPost(
   console.log(`🤖 正在呼叫 DeepSeek API 分析 ${matchRecords.length} 場比賽...`)
   const analysis = await generateMatchAnalysis(matchesForAnalysis)
 
-  await Promise.all(
-    matchRecords.map((match) =>
-      prisma.analysisLog.create({
-        data: {
-          matchId: match.id,
-          deepseekOutput: analysis,
-        },
-      })
-    )
-  )
+  await prisma.analysisLog.create({
+    data: {
+      matchId: matchRecords[0].id,
+      deepseekOutput: analysis,
+    },
+  })
 
   const tomorrow = new Date()
   tomorrow.setDate(tomorrow.getDate() + 1)
