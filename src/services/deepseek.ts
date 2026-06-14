@@ -47,14 +47,17 @@ export async function generateMatchAnalysis(
 
   const userPrompt = `今日賽程如下（所有時間為台灣時間）：\n\n${matchList}\n\n請為以上比賽生成完整分析報告。`
 
-  const response = await deepseek.chat.completions.create({
-    model: "deepseek-chat",
+  const response = await (deepseek.chat.completions.create as any)({
+    model: "deepseek-v4-flash",
     messages: [
       { role: "system", content: systemPrompt },
       { role: "user", content: userPrompt },
     ],
-    temperature: 0.7,
+    reasoning_effort: "high",
     max_tokens: 4096,
+    extra_body: {
+      thinking: { type: "enabled" },
+    },
   })
 
   return response.choices[0]?.message?.content || "分析生成失敗，請稍後再試。"
