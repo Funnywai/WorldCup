@@ -41,13 +41,6 @@ async function runDailyAnalysis(client: Client): Promise<void> {
     if (hkjcMatches.length === 0) {
       console.log(`📡 今日無賽事，嘗試撈取明日 (${tomorrowStr})...`)
       hkjcMatches = await fetchWorldCupMatches(tomorrowStr, tomorrowStr)
-    }
-
-    if (hkjcMatches.length === 0) {
-      const futureDate = new Date(today)
-      futureDate.setDate(futureDate.getDate() + 30)
-      console.log(`📡 明日也無賽事，嘗試撈取未來 30 天 (${dateStr} ~ ${formatDate(futureDate)}) 世界盃賽事...`)
-      hkjcMatches = await fetchWorldCupMatches(dateStr, formatDate(futureDate))
       if (hkjcMatches.length === 0) {
         await channel.send("📭 暫無世界盃賽程資料。")
         return
@@ -196,14 +189,17 @@ export function startMatchFetchCron(): void {
   const CRON_FETCH = process.env.CRON_FETCH || "*/15 * * * *"
   cron.schedule(CRON_FETCH, async () => {
     try {
-      const today = new Date()
-      const futureDate = new Date(today)
-      futureDate.setDate(futureDate.getDate() + 30)
-      const todayStr = formatDate(today)
-      const futureStr = formatDate(futureDate)
+      const todayStr = formatDate(new Date())
+      const tomorrowDate = new Date()
+      tomorrowDate.setDate(tomorrowDate.getDate() + 1)
+      const tomorrowStr = formatDate(tomorrowDate)
 
-      console.log(`📡 [Cron Fetch] 正在背景同步賽程 (${todayStr} ~ ${futureStr})...`)
-      const matches = await fetchWorldCupMatches(todayStr, futureStr)
+      console.log(`📡 [Cron Fetch] 正在背景同步賽程 (${todayStr})...`)
+      let matches = await fetchWorldCupMatches(todayStr, todayStr)
+      if (matches.length === 0) {
+        console.log(`📡 [Cron Fetch] 今日無賽事，嘗試撈取明日 (${tomorrowStr})...`)
+        matches = await fetchWorldCupMatches(tomorrowStr, tomorrowStr)
+      }
       if (matches.length > 0) {
         await upsertMatchesToDb(matches)
         console.log(`✅ [Cron Fetch] 已更新 ${matches.length} 場比賽賠率`)

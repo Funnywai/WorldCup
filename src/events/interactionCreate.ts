@@ -86,19 +86,7 @@ async function handleAutocomplete(
     const focusedOption = interaction.options.getFocused(true)
 
     if (focusedOption.name === "match") {
-      const now = new Date()
-      const endOfTomorrow = new Date(now)
-      endOfTomorrow.setDate(endOfTomorrow.getDate() + 1)
-      endOfTomorrow.setHours(23, 59, 59, 999)
-
-      const threeHoursAgo = new Date(now.getTime() - 3 * 3600000)
-      const matches = await prisma.match.findMany({
-        where: {
-          status: { in: ["scheduled", "live"] },
-          startTime: { gte: threeHoursAgo, lte: endOfTomorrow },
-        },
-        orderBy: { startTime: "asc" },
-      })
+      const matches = await queryUpcomingMatches()
 
       const choices = matches.map((m) => ({
         name: `${m.homeTeam} vs ${m.awayTeam}`,
@@ -858,25 +846,17 @@ async function handleFetch(
   try {
     await interaction.deferReply()
 
-    const today = new Date()
-    const dateStr = formatDate(today)
-    const tomorrow = new Date(today)
-    tomorrow.setDate(tomorrow.getDate() + 1)
-    const tomorrowStr = formatDate(tomorrow)
+    const todayStr = formatDate(new Date())
+    const tomorrowDate = new Date()
+    tomorrowDate.setDate(tomorrowDate.getDate() + 1)
+    const tomorrowStr = formatDate(tomorrowDate)
 
-    console.log(`📡 [/fetch] 正在從 HKJC 抓取今日 (${dateStr}) 世界盃賽事...`)
-    let matches = await fetchWorldCupMatches(dateStr, dateStr)
+    console.log(`📡 [/fetch] 正在從 HKJC 抓取今日 (${todayStr}) 世界盃賽事...`)
+    let matches = await fetchWorldCupMatches(todayStr, todayStr)
 
     if (matches.length === 0) {
       console.log(`📡 [/fetch] 今日無賽事，嘗試撈取明日 (${tomorrowStr})...`)
       matches = await fetchWorldCupMatches(tomorrowStr, tomorrowStr)
-    }
-
-    if (matches.length === 0) {
-      const futureDate = new Date(today)
-      futureDate.setDate(futureDate.getDate() + 30)
-      console.log(`📡 [/fetch] 明日也無賽事，嘗試撈取未來 30 天 (${dateStr} ~ ${formatDate(futureDate)}) 世界盃賽事...`)
-      matches = await fetchWorldCupMatches(dateStr, formatDate(futureDate))
     }
 
     if (matches.length === 0) {
@@ -1005,19 +985,37 @@ async function handleRefreshMatch(
 }
 
 async function queryUpcomingMatches() {
-  const now = new Date()
-  const endOfTomorrow = new Date(now)
-  endOfTomorrow.setDate(endOfTomorrow.getDate() + 1)
-  endOfTomorrow.setHours(23, 59, 59, 999)
+  const startOfToday = new Date()
+  startOfToday.setHours(0, 0, 0, 0)
+  const endOfToday = new Date()
+  endOfToday.setHours(23, 59, 59, 999)
 
-  const threeHoursAgo = new Date(now.getTime() - 3 * 3600000)
-  return prisma.match.findMany({
+  let matches = await prisma.match.findMany({
     where: {
       status: { in: ["scheduled", "live"] },
-      startTime: { gte: threeHoursAgo, lte: endOfTomorrow },
+      startTime: { gte: startOfToday, lte: endOfToday },
     },
     orderBy: { startTime: "asc" },
   })
+
+  if (matches.length === 0) {
+    const startOfTomorrow = new Date()
+    startOfTomorrow.setDate(startOfTomorrow.getDate() + 1)
+    startOfTomorrow.setHours(0, 0, 0, 0)
+    const endOfTomorrow = new Date()
+    endOfTomorrow.setDate(endOfTomorrow.getDate() + 1)
+    endOfTomorrow.setHours(23, 59, 59, 999)
+
+    matches = await prisma.match.findMany({
+      where: {
+        status: "scheduled",
+        startTime: { gte: startOfTomorrow, lte: endOfTomorrow },
+      },
+      orderBy: { startTime: "asc" },
+    })
+  }
+
+  return matches
 }
 
 function buildMatchEmbed(matches: Awaited<ReturnType<typeof queryUpcomingMatches>>): EmbedBuilder {
@@ -1098,19 +1096,7 @@ async function handleAnalyst(
   try {
     await interaction.deferReply()
 
-    const now = new Date()
-    const endOfTomorrow = new Date(now)
-    endOfTomorrow.setDate(endOfTomorrow.getDate() + 1)
-    endOfTomorrow.setHours(23, 59, 59, 999)
-    const threeHoursAgo = new Date(now.getTime() - 3 * 3600000)
-
-    const matches = await prisma.match.findMany({
-      where: {
-        startTime: { gte: threeHoursAgo, lte: endOfTomorrow },
-        status: { in: ["scheduled", "live"] },
-      },
-      orderBy: { startTime: "asc" },
-    })
+    const matches = await queryUpcomingMatches()
 
     if (matches.length === 0) {
       await interaction.editReply(
