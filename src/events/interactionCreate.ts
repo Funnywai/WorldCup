@@ -3,6 +3,10 @@ import {
   EmbedBuilder,
   ChatInputCommandInteraction,
   AutocompleteInteraction,
+  ButtonBuilder,
+  ActionRowBuilder,
+  ButtonStyle,
+  ButtonInteraction,
 } from "discord.js"
 import prisma from "../db/prisma"
 import { requireAuth, requireAdmin, hashPassword, verifyPassword } from "../services/auth"
@@ -28,6 +32,13 @@ export async function onInteractionCreate(
   if (interaction.isAutocomplete()) {
     await handleAutocomplete(interaction)
     return
+  }
+
+  if (interaction.isButton()) {
+    if (interaction.customId === "refresh_match") {
+      await handleRefreshMatch(interaction)
+      return
+    }
   }
 
   if (!interaction.isChatInputCommand()) return
@@ -950,80 +961,15 @@ async function handleMatch(
   try {
     await interaction.deferReply()
 
-    const now = new Date()
-    const endOfTomorrow = new Date(now)
-    endOfTomorrow.setDate(endOfTomorrow.getDate() + 1)
-    endOfTomorrow.setHours(23, 59, 59, 999)
-
-    const matches = await prisma.match.findMany({
-      where: {
-        startTime: { gte: now, lte: endOfTomorrow },
-        status: "scheduled",
-      },
-      orderBy: { startTime: "asc" },
-    })
-
+    const matches = await queryUpcomingMatches()
     if (matches.length === 0) {
       await interaction.editReply("📭 目前沒有即將到來的賽程。")
       return
     }
 
-    const matchLines = matches.map((m, i) => {
-      const oddsData = m.oddsData as Record<string, unknown> | null
-      let oddsLines: string[] = []
-      if (oddsData) {
-        const had = oddsData["HAD"] as
-          | { combinations?: Array<{ str: string; odds: number }> }
-          | undefined
-        if (had?.combinations) {
-          const home = had.combinations.find((c) => c.str === "H")
-          const draw = had.combinations.find((c) => c.str === "D")
-          const away = had.combinations.find((c) => c.str === "A")
-          oddsLines.push(
-            `主 ${home?.odds.toFixed(2) ?? "—"} | ` +
-            `和 ${draw?.odds.toFixed(2) ?? "—"} | ` +
-            `客 ${away?.odds.toFixed(2) ?? "—"}`
-          )
-        }
-
-        const hdc = oddsData["HDC"] as
-          | { combinations?: Array<{ str: string; odds: number; status: string; condition?: string }> }
-          | undefined
-        const hdcCombos = hdc?.combinations
-        if (hdcCombos) {
-          const conds = [...new Set(hdcCombos.filter(c => c.status === "AVAILABLE" && c.condition).map(c => c.condition!))]
-          const hdcParts = conds.map((cond) => {
-            const h = hdcCombos.find((c) => c.condition === cond && c.str === "H")
-            const a = hdcCombos.find((c) => c.condition === cond && c.str === "A")
-            return `主 ${cond} (${h?.odds.toFixed(2) ?? "—"}) | 客 ${flipCondition(cond)} (${a?.odds.toFixed(2) ?? "—"})`
-          })
-          if (hdcParts.length > 0) {
-            oddsLines.push(`⚖️ ${hdcParts.join(" | ")}`)
-          }
-        }
-      }
-      const time = m.startTime.toLocaleString("zh-TW", {
-        timeZone: "Asia/Taipei",
-        month: "2-digit",
-        day: "2-digit",
-        hour: "2-digit",
-        minute: "2-digit",
-      })
-      return (
-        `**#${i + 1}** ${m.homeTeam} vs ${m.awayTeam}\n` +
-        `　🕐 ${time}\n` +
-        `　📊 ${oddsLines.join("\n　")}`
-      )
-    })
-
-    const embed = new EmbedBuilder()
-      .setColor(0x00aaff)
-      .setTitle("📅 即將到來的賽程")
-      .setDescription(matchLines.join("\n\n"))
-      .setFooter({ text: "可使用 /bet place 進行下注" })
-      .setTimestamp()
-
-    await interaction.editReply({ embeds: [embed] })
+    const embed = buildMatchEmbed(matches)
+    const row = buildMatchActionRow()
+    await interaction.editReply({ embeds: [embed], components: [row] })
   } catch (error) {
     console.error("❌ /match 執行錯誤:", error)
     const content = "❌ 查詢賽程時發生錯誤，請稍後再試。"
@@ -1033,6 +979,108 @@ async function handleMatch(
       await interaction.reply({ content, ephemeral: true })
     }
   }
+}
+
+async function handleRefreshMatch(
+  interaction: ButtonInteraction
+): Promise<void> {
+  try {
+    await interaction.deferUpdate()
+
+    const matches = await queryUpcomingMatches()
+    if (matches.length === 0) {
+      await interaction.editReply({ content: "📭 目前沒有即將到來的賽程。", embeds: [], components: [] })
+      return
+    }
+
+    const embed = buildMatchEmbed(matches)
+    const row = buildMatchActionRow()
+    await interaction.editReply({ embeds: [embed], components: [row] })
+  } catch (error) {
+    console.error("❌ 重新整理賽程錯誤:", error)
+    await interaction.editReply({ content: "❌ 重新整理時發生錯誤。", embeds: [], components: [] })
+  }
+}
+
+async function queryUpcomingMatches() {
+  const now = new Date()
+  const endOfTomorrow = new Date(now)
+  endOfTomorrow.setDate(endOfTomorrow.getDate() + 1)
+  endOfTomorrow.setHours(23, 59, 59, 999)
+
+  return prisma.match.findMany({
+    where: {
+      startTime: { gte: now, lte: endOfTomorrow },
+      status: "scheduled",
+    },
+    orderBy: { startTime: "asc" },
+  })
+}
+
+function buildMatchEmbed(matches: Awaited<ReturnType<typeof queryUpcomingMatches>>): EmbedBuilder {
+  const matchLines = matches.map((m, i) => {
+    const oddsData = m.oddsData as Record<string, unknown> | null
+    const oddsLines: string[] = []
+    if (oddsData) {
+      const had = oddsData["HAD"] as
+        | { combinations?: Array<{ str: string; odds: number }> }
+        | undefined
+      if (had?.combinations) {
+        const home = had.combinations.find((c) => c.str === "H")
+        const draw = had.combinations.find((c) => c.str === "D")
+        const away = had.combinations.find((c) => c.str === "A")
+        oddsLines.push(
+          `主 ${home?.odds.toFixed(2) ?? "—"} | ` +
+          `和 ${draw?.odds.toFixed(2) ?? "—"} | ` +
+          `客 ${away?.odds.toFixed(2) ?? "—"}`
+        )
+      }
+
+      const hdc = oddsData["HDC"] as
+        | { combinations?: Array<{ str: string; odds: number; status: string; condition?: string }> }
+        | undefined
+      const hdcCombos = hdc?.combinations
+      if (hdcCombos) {
+        const conds = [...new Set(hdcCombos.filter(c => c.status === "AVAILABLE" && c.condition).map(c => c.condition!))]
+        const hdcParts = conds.map((cond) => {
+          const h = hdcCombos.find((c) => c.condition === cond && c.str === "H")
+          const a = hdcCombos.find((c) => c.condition === cond && c.str === "A")
+          return `主 ${cond} (${h?.odds.toFixed(2) ?? "—"}) | 客 ${flipCondition(cond)} (${a?.odds.toFixed(2) ?? "—"})`
+        })
+        if (hdcParts.length > 0) {
+          oddsLines.push(`⚖️ ${hdcParts.join(" | ")}`)
+        }
+      }
+    }
+    const time = m.startTime.toLocaleString("zh-TW", {
+      timeZone: "Asia/Taipei",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    })
+    return (
+      `**#${i + 1}** ${m.homeTeam} vs ${m.awayTeam}\n` +
+      `　🕐 ${time}\n` +
+      `　📊 ${oddsLines.join("\n　")}`
+    )
+  })
+
+  return new EmbedBuilder()
+    .setColor(0x00aaff)
+    .setTitle("📅 即將到來的賽程")
+    .setDescription(matchLines.join("\n\n"))
+    .setFooter({ text: "可使用 /bet place 進行下注" })
+    .setTimestamp()
+}
+
+function buildMatchActionRow(): ActionRowBuilder<ButtonBuilder> {
+  const refreshButton = new ButtonBuilder()
+    .setCustomId("refresh_match")
+    .setLabel("🔄 重新整理")
+    .setStyle(ButtonStyle.Primary)
+
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(refreshButton)
 }
 
 // ─── /analyst ──────────────────────────────────────────────────────────────
