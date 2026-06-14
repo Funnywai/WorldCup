@@ -2,7 +2,7 @@ import { Client, GatewayIntentBits } from "discord.js"
 import dotenv from "dotenv"
 import { registerCommands } from "./events/ready"
 import { onInteractionCreate } from "./events/interactionCreate"
-import { startDailyAnalysisCron } from "./services/dailyAnalysis"
+import { startDailyAnalysisCron, startMatchFetchCron } from "./services/dailyAnalysis"
 
 dotenv.config()
 
@@ -14,6 +14,7 @@ client.once("ready", async (readyClient) => {
   console.log(`🤖 已登入為 ${readyClient.user.tag}`)
   await registerCommands(readyClient)
   startDailyAnalysisCron(readyClient)
+  startMatchFetchCron()
 })
 
 client.on("interactionCreate", onInteractionCreate)

@@ -195,3 +195,29 @@ export function formatDate(date: Date): string {
   const dd = String(date.getDate()).padStart(2, "0")
   return `${yyyy}-${mm}-${dd}`
 }
+
+export function startMatchFetchCron(): void {
+  const CRON_FETCH = process.env.CRON_FETCH || "*/15 * * * *"
+  cron.schedule(CRON_FETCH, async () => {
+    try {
+      const today = new Date()
+      const futureDate = new Date(today)
+      futureDate.setDate(futureDate.getDate() + 30)
+      const todayStr = formatDate(today)
+      const futureStr = formatDate(futureDate)
+
+      console.log(`📡 [Cron Fetch] 正在背景同步賽程 (${todayStr} ~ ${futureStr})...`)
+      const matches = await fetchWorldCupMatches(todayStr, futureStr)
+      if (matches.length > 0) {
+        await upsertMatchesToDb(matches)
+        console.log(`✅ [Cron Fetch] 已更新 ${matches.length} 場比賽賠率`)
+      } else {
+        console.log(`📭 [Cron Fetch] 暫無世界盃賽事`)
+      }
+    } catch (error) {
+      console.error("❌ [Cron Fetch] 背景同步失敗:", error)
+    }
+  })
+
+  console.log(`⏰ 背景賠率同步排程已設定：${CRON_FETCH}`)
+}
