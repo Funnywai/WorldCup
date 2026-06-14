@@ -1102,11 +1102,12 @@ async function handleAnalyst(
     const endOfTomorrow = new Date(now)
     endOfTomorrow.setDate(endOfTomorrow.getDate() + 1)
     endOfTomorrow.setHours(23, 59, 59, 999)
+    const threeHoursAgo = new Date(now.getTime() - 3 * 3600000)
 
     const matches = await prisma.match.findMany({
       where: {
-        startTime: { gte: now, lte: endOfTomorrow },
-        status: "scheduled",
+        startTime: { gte: threeHoursAgo, lte: endOfTomorrow },
+        status: { in: ["scheduled", "live"] },
       },
       orderBy: { startTime: "asc" },
     })
