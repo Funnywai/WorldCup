@@ -16,14 +16,20 @@ export const betCommand = new SlashCommandBuilder()
       )
       .addStringOption((opt) =>
         opt
-          .setName("prediction")
-          .setDescription("預測結果")
+          .setName("type")
+          .setDescription("玩法類型")
           .setRequired(true)
           .addChoices(
-            { name: "主隊勝", value: "home" },
-            { name: "客隊勝", value: "away" },
-            { name: "平手", value: "draw" }
+            { name: "主客和", value: "HAD" },
+            { name: "讓球", value: "HDC" }
           )
+      )
+      .addStringOption((opt) =>
+        opt
+          .setName("prediction")
+          .setDescription("預測選項")
+          .setRequired(true)
+          .setAutocomplete(true)
       )
       .addNumberOption((opt) =>
         opt

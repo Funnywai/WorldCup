@@ -9,6 +9,19 @@ import { requireAuth, requireAdmin, hashPassword, verifyPassword } from "../serv
 import { fetchWorldCupMatches } from "../services/hkjc"
 import { upsertMatchesToDb, analyzeAndPost, formatDate } from "../services/dailyAnalysis"
 
+function flipCondition(condition: string): string {
+  if (!condition.includes("/")) {
+    if (condition.startsWith("-")) return "+" + condition.slice(1)
+    if (condition === "0" || condition === "0.0") return condition
+    return "-" + condition
+  }
+  return condition.split("/").map((part) => {
+    if (part.startsWith("-")) return "+" + part.slice(1)
+    if (part === "0" || part === "0.0") return part
+    return "-" + part
+  }).join("/")
+}
+
 export async function onInteractionCreate(
   interaction: Interaction
 ): Promise<void> {
@@ -61,22 +74,20 @@ async function handleAutocomplete(
 
   if (commandName === "bet") {
     const focusedOption = interaction.options.getFocused(true)
-    if (focusedOption.name === "match") {
-      const today = new Date()
-      const tomorrow = new Date(today)
-      tomorrow.setDate(tomorrow.getDate() + 1)
-      const startOfDay = new Date(tomorrow)
-      startOfDay.setHours(0, 0, 0, 0)
-      const endOfDay = new Date(tomorrow)
-      endOfDay.setHours(23, 59, 59, 999)
 
-    const matches = await prisma.match.findMany({
-      where: {
-        startTime: { gte: startOfDay, lte: endOfDay },
-        status: "scheduled",
-      },
-      orderBy: { startTime: "asc" },
-    })
+    if (focusedOption.name === "match") {
+      const now = new Date()
+      const endOfTomorrow = new Date(now)
+      endOfTomorrow.setDate(endOfTomorrow.getDate() + 1)
+      endOfTomorrow.setHours(23, 59, 59, 999)
+
+      const matches = await prisma.match.findMany({
+        where: {
+          startTime: { gte: now, lte: endOfTomorrow },
+          status: "scheduled",
+        },
+        orderBy: { startTime: "asc" },
+      })
 
       const choices = matches.map((m) => ({
         name: `${m.homeTeam} vs ${m.awayTeam}`,
@@ -84,6 +95,91 @@ async function handleAutocomplete(
       }))
 
       await interaction.respond(choices)
+    }
+
+    if (focusedOption.name === "prediction") {
+      const betType = interaction.options.getString("type")
+
+      if (!betType) {
+        await interaction.respond([])
+        return
+      }
+
+      if (betType === "HAD") {
+        const matchId = interaction.options.getString("match")
+        if (!matchId) {
+          await interaction.respond([])
+          return
+        }
+
+        const match = await prisma.match.findUnique({
+          where: { id: matchId },
+        })
+
+        let homeOdds: number | undefined
+        let drawOdds: number | undefined
+        let awayOdds: number | undefined
+
+        if (match) {
+          const oddsData = match.oddsData as Record<string, unknown> | null
+          const had = oddsData?.["HAD"] as
+            | { combinations?: Array<{ str: string; odds: number }> }
+            | undefined
+          if (had?.combinations) {
+            homeOdds = had.combinations.find((c) => c.str === "H")?.odds
+            drawOdds = had.combinations.find((c) => c.str === "D")?.odds
+            awayOdds = had.combinations.find((c) => c.str === "A")?.odds
+          }
+        }
+
+        await interaction.respond([
+          { name: `主隊勝${homeOdds !== undefined ? ` (${homeOdds.toFixed(2)})` : ""}`, value: "home" },
+          { name: `平手${drawOdds !== undefined ? ` (${drawOdds.toFixed(2)})` : ""}`, value: "draw" },
+          { name: `客隊勝${awayOdds !== undefined ? ` (${awayOdds.toFixed(2)})` : ""}`, value: "away" },
+        ])
+        return
+      }
+
+      if (betType === "HDC") {
+        const matchId = interaction.options.getString("match")
+        if (!matchId) {
+          await interaction.respond([])
+          return
+        }
+
+        const match = await prisma.match.findUnique({
+          where: { id: matchId },
+        })
+
+        if (!match) {
+          await interaction.respond([])
+          return
+        }
+
+        const oddsData = match.oddsData as Record<string, unknown> | null
+        const hdc = oddsData?.["HDC"] as
+          | { combinations?: Array<{ str: string; name: string; odds: number; status: string; condition?: string }> }
+          | undefined
+
+        if (!hdc?.combinations) {
+          await interaction.respond([])
+          return
+        }
+
+        const choices = hdc.combinations
+          .filter((c) => c.status === "AVAILABLE")
+          .map((c) => {
+            const teamName = c.str === "H" ? match.homeTeam : match.awayTeam
+            const displayCond = c.str === "H" ? c.condition : (c.condition ? flipCondition(c.condition) : undefined)
+            const suffix = displayCond ? ` ${displayCond}` : ""
+            return {
+              name: `${teamName}${suffix} — ${c.odds.toFixed(2)}`,
+              value: c.str,
+            }
+          })
+
+        await interaction.respond(choices)
+      }
     }
   }
 }
@@ -481,6 +577,7 @@ async function handleBetPlace(
     await interaction.deferReply()
 
     const matchId = interaction.options.getString("match", true)
+    const betType = interaction.options.getString("type", true)
     const prediction = interaction.options.getString("prediction", true)
     const amount = interaction.options.getNumber("amount", true)
 
@@ -499,8 +596,10 @@ async function handleBetPlace(
 
     // 從 oddsData 中取得對應預測的即時賠率
     let betOdds = 2.0
+    let predictionText = prediction
     const oddsData = match.oddsData as Record<string, unknown> | null
-    if (oddsData) {
+
+    if (betType === "HAD" && oddsData) {
       const had = oddsData["HAD"] as
         | { combinations?: Array<{ str: string; odds: number }> }
         | undefined
@@ -511,14 +610,32 @@ async function handleBetPlace(
           betOdds = matchComb.odds
         }
       }
+      predictionText =
+        prediction === "home"
+          ? match.homeTeam
+          : prediction === "away"
+            ? match.awayTeam
+            : "平手"
     }
 
-    const predictionText =
-      prediction === "home"
-        ? match.homeTeam
-        : prediction === "away"
-          ? match.awayTeam
-          : "平手"
+    if (betType === "HDC" && oddsData) {
+      const hdc = oddsData["HDC"] as
+        | { combinations?: Array<{ str: string; name: string; odds: number; condition?: string }> }
+        | undefined
+      const matchComb = hdc?.combinations?.find((c) => c.str === prediction)
+      if (matchComb) {
+        betOdds = matchComb.odds
+        const teamName = prediction === "H" ? match.homeTeam : match.awayTeam
+        predictionText = matchComb.condition
+          ? `${teamName} ${matchComb.condition}`
+          : teamName
+      }
+    }
+
+    const typeLabels: Record<string, string> = {
+      HAD: "主客和",
+      HDC: "讓球",
+    }
 
     // user is guaranteed non-null here
     const u = user as NonNullable<typeof user>
@@ -535,6 +652,7 @@ async function handleBetPlace(
           matchId: match.id,
           amount,
           odds: betOdds,
+          betType,
           prediction,
           status: "pending",
         },
@@ -550,6 +668,7 @@ async function handleBetPlace(
           value: `${match.homeTeam} vs ${match.awayTeam}`,
           inline: false,
         },
+        { name: "玩法", value: typeLabels[betType] ?? betType, inline: true },
         { name: "預測", value: predictionText, inline: true },
         { name: "金額", value: `$${amount.toLocaleString()}`, inline: true },
         { name: "賠率", value: betOdds.toFixed(2), inline: true }
@@ -605,18 +724,40 @@ async function handleBetHistory(
       lost: "❌ 失敗",
     }
 
+    const typeLabels: Record<string, string> = {
+      HAD: "主客和",
+      HDC: "讓球",
+    }
+
     const description = bets
       .map((bet, i) => {
         const match = bet.match
-        const predictionText =
-          bet.prediction === "home"
-            ? match.homeTeam
-            : bet.prediction === "away"
-              ? match.awayTeam
-              : "平手"
+        let predictionText = bet.prediction
+        if (bet.betType === "HAD" || !bet.betType) {
+          predictionText =
+            bet.prediction === "home"
+              ? match.homeTeam
+              : bet.prediction === "away"
+                ? match.awayTeam
+                : "平手"
+        } else if (bet.betType === "HDC") {
+          const oddsData = match.oddsData as Record<string, unknown> | null
+          const hdc = oddsData?.["HDC"] as
+            | { combinations?: Array<{ str: string; name: string; condition?: string }> }
+            | undefined
+          const comb = hdc?.combinations?.find((c) => c.str === bet.prediction)
+          if (comb) {
+            const teamName = bet.prediction === "H" ? match.homeTeam : match.awayTeam
+            predictionText = comb.condition
+              ? `${teamName} ${comb.condition}`
+              : teamName
+          } else {
+            predictionText = bet.prediction === "H" ? match.homeTeam : match.awayTeam
+          }
+        }
         return (
           `**#${skip + i + 1}** ${match.homeTeam} vs ${match.awayTeam}\n` +
-          `　┗ 預測: ${predictionText} | 金額: $${bet.amount.toLocaleString()} | 賠率: ${bet.odds.toFixed(2)} | 狀態: ${statusText[bet.status]}\n` +
+          `　┗ 玩法: ${typeLabels[bet.betType] ?? bet.betType} | 預測: ${predictionText} | 金額: $${bet.amount.toLocaleString()} | 賠率: ${bet.odds.toFixed(2)} | 狀態: ${statusText[bet.status]}\n` +
           `　┗ 日期: ${bet.createdAt.toLocaleString("zh-TW")}`
         )
       })
@@ -707,17 +848,23 @@ async function handleFetch(
     await interaction.deferReply()
 
     const today = new Date()
+    const dateStr = formatDate(today)
     const tomorrow = new Date(today)
     tomorrow.setDate(tomorrow.getDate() + 1)
-    const dateStr = formatDate(tomorrow)
+    const tomorrowStr = formatDate(tomorrow)
 
-    console.log(`📡 [/fetch] 正在從 HKJC 抓取明日 (${dateStr}) 世界盃賽事...`)
+    console.log(`📡 [/fetch] 正在從 HKJC 抓取今日 (${dateStr}) 世界盃賽事...`)
     let matches = await fetchWorldCupMatches(dateStr, dateStr)
 
     if (matches.length === 0) {
-      const futureDate = new Date(tomorrow)
+      console.log(`📡 [/fetch] 今日無賽事，嘗試撈取明日 (${tomorrowStr})...`)
+      matches = await fetchWorldCupMatches(tomorrowStr, tomorrowStr)
+    }
+
+    if (matches.length === 0) {
+      const futureDate = new Date(today)
       futureDate.setDate(futureDate.getDate() + 30)
-      console.log(`📡 [/fetch] 明日無賽事，嘗試撈取未來 30 天 (${dateStr} ~ ${formatDate(futureDate)}) 世界盃賽事...`)
+      console.log(`📡 [/fetch] 明日也無賽事，嘗試撈取未來 30 天 (${dateStr} ~ ${formatDate(futureDate)}) 世界盃賽事...`)
       matches = await fetchWorldCupMatches(dateStr, formatDate(futureDate))
     }
 
@@ -730,7 +877,7 @@ async function handleFetch(
 
     const matchLines = records.map((m, i) => {
       const oddsData = m.oddsData as Record<string, unknown> | null
-      let oddsLine = "—"
+      let oddsLines: string[] = []
       if (oddsData) {
         const had = oddsData["HAD"] as
           | { combinations?: Array<{ str: string; odds: number }> }
@@ -739,9 +886,27 @@ async function handleFetch(
           const home = had.combinations.find((c) => c.str === "H")
           const draw = had.combinations.find((c) => c.str === "D")
           const away = had.combinations.find((c) => c.str === "A")
-          oddsLine = `主 ${home?.odds.toFixed(2) ?? "—"} | ` +
+          oddsLines.push(
+            `主 ${home?.odds.toFixed(2) ?? "—"} | ` +
             `和 ${draw?.odds.toFixed(2) ?? "—"} | ` +
             `客 ${away?.odds.toFixed(2) ?? "—"}`
+          )
+        }
+
+        const hdc = oddsData["HDC"] as
+          | { combinations?: Array<{ str: string; odds: number; status: string; condition?: string }> }
+          | undefined
+        const hdcCombos = hdc?.combinations
+        if (hdcCombos) {
+          const conds = [...new Set(hdcCombos.filter(c => c.status === "AVAILABLE" && c.condition).map(c => c.condition!))]
+          const hdcParts = conds.map((cond) => {
+            const h = hdcCombos.find((c) => c.condition === cond && c.str === "H")
+            const a = hdcCombos.find((c) => c.condition === cond && c.str === "A")
+            return `主 ${cond} (${h?.odds.toFixed(2) ?? "—"}) | 客 ${flipCondition(cond)} (${a?.odds.toFixed(2) ?? "—"})`
+          })
+          if (hdcParts.length > 0) {
+            oddsLines.push(`⚖️ ${hdcParts.join(" | ")}`)
+          }
         }
       }
       const time = m.startTime.toLocaleString("zh-TW", {
@@ -754,7 +919,7 @@ async function handleFetch(
       return (
         `**#${i + 1}** ${m.homeTeam} vs ${m.awayTeam}\n` +
         `　🕐 ${time}\n` +
-        `　📊 ${oddsLine}`
+        `　📊 ${oddsLines.join("\n　")}`
       )
     })
 
@@ -785,29 +950,27 @@ async function handleMatch(
   try {
     await interaction.deferReply()
 
-    const today = new Date()
-    const tomorrow = new Date(today)
-    tomorrow.setDate(tomorrow.getDate() + 1)
-    const startOfDay = new Date(tomorrow)
-    startOfDay.setHours(0, 0, 0, 0)
-    const endOfDay = new Date(tomorrow)
-    endOfDay.setHours(23, 59, 59, 999)
+    const now = new Date()
+    const endOfTomorrow = new Date(now)
+    endOfTomorrow.setDate(endOfTomorrow.getDate() + 1)
+    endOfTomorrow.setHours(23, 59, 59, 999)
 
     const matches = await prisma.match.findMany({
       where: {
-        startTime: { gte: startOfDay, lte: endOfDay },
+        startTime: { gte: now, lte: endOfTomorrow },
         status: "scheduled",
       },
+      orderBy: { startTime: "asc" },
     })
 
     if (matches.length === 0) {
-      await interaction.editReply("📭 明日沒有賽程。")
+      await interaction.editReply("📭 目前沒有即將到來的賽程。")
       return
     }
 
     const matchLines = matches.map((m, i) => {
       const oddsData = m.oddsData as Record<string, unknown> | null
-      let oddsLine = "—"
+      let oddsLines: string[] = []
       if (oddsData) {
         const had = oddsData["HAD"] as
           | { combinations?: Array<{ str: string; odds: number }> }
@@ -816,9 +979,27 @@ async function handleMatch(
           const home = had.combinations.find((c) => c.str === "H")
           const draw = had.combinations.find((c) => c.str === "D")
           const away = had.combinations.find((c) => c.str === "A")
-          oddsLine = `主 ${home?.odds.toFixed(2) ?? "—"} | ` +
+          oddsLines.push(
+            `主 ${home?.odds.toFixed(2) ?? "—"} | ` +
             `和 ${draw?.odds.toFixed(2) ?? "—"} | ` +
             `客 ${away?.odds.toFixed(2) ?? "—"}`
+          )
+        }
+
+        const hdc = oddsData["HDC"] as
+          | { combinations?: Array<{ str: string; odds: number; status: string; condition?: string }> }
+          | undefined
+        const hdcCombos = hdc?.combinations
+        if (hdcCombos) {
+          const conds = [...new Set(hdcCombos.filter(c => c.status === "AVAILABLE" && c.condition).map(c => c.condition!))]
+          const hdcParts = conds.map((cond) => {
+            const h = hdcCombos.find((c) => c.condition === cond && c.str === "H")
+            const a = hdcCombos.find((c) => c.condition === cond && c.str === "A")
+            return `主 ${cond} (${h?.odds.toFixed(2) ?? "—"}) | 客 ${flipCondition(cond)} (${a?.odds.toFixed(2) ?? "—"})`
+          })
+          if (hdcParts.length > 0) {
+            oddsLines.push(`⚖️ ${hdcParts.join(" | ")}`)
+          }
         }
       }
       const time = m.startTime.toLocaleString("zh-TW", {
@@ -831,13 +1012,13 @@ async function handleMatch(
       return (
         `**#${i + 1}** ${m.homeTeam} vs ${m.awayTeam}\n` +
         `　🕐 ${time}\n` +
-        `　📊 ${oddsLine}`
+        `　📊 ${oddsLines.join("\n　")}`
       )
     })
 
     const embed = new EmbedBuilder()
       .setColor(0x00aaff)
-      .setTitle("📅 明日世界盃賽程")
+      .setTitle("📅 即將到來的賽程")
       .setDescription(matchLines.join("\n\n"))
       .setFooter({ text: "可使用 /bet place 進行下注" })
       .setTimestamp()
@@ -864,24 +1045,22 @@ async function handleAnalyst(
   try {
     await interaction.deferReply()
 
-    const today = new Date()
-    const tomorrow = new Date(today)
-    tomorrow.setDate(tomorrow.getDate() + 1)
-    const startOfDay = new Date(tomorrow)
-    startOfDay.setHours(0, 0, 0, 0)
-    const endOfDay = new Date(tomorrow)
-    endOfDay.setHours(23, 59, 59, 999)
+    const now = new Date()
+    const endOfTomorrow = new Date(now)
+    endOfTomorrow.setDate(endOfTomorrow.getDate() + 1)
+    endOfTomorrow.setHours(23, 59, 59, 999)
 
     const matches = await prisma.match.findMany({
       where: {
-        startTime: { gte: startOfDay, lte: endOfDay },
+        startTime: { gte: now, lte: endOfTomorrow },
         status: "scheduled",
       },
+      orderBy: { startTime: "asc" },
     })
 
     if (matches.length === 0) {
       await interaction.editReply(
-        "❌ 明日沒有待分析的世界盃賽程。請先執行 `/fetch` 拉取賽程。"
+        "❌ 目前沒有待分析的賽程。請先執行 `/fetch` 拉取賽程。"
       )
       return
     }
@@ -915,7 +1094,7 @@ async function handleHelp(
   const generalCommands = [
     "**`/login <username> <password>`** — 登入或註冊帳號",
     "**`/stat`** — 查詢個人下注統計與累計盈虧",
-    "**`/match`** — 查看明日世界盃賽程與賠率",
+    "**`/match`** — 查看即將到來的世界盃賽程與賠率",
     "**`/bet place <prediction> <amount>`** — 對比賽下注（從選單選擇比賽）",
     "**`/bet history [page]`** — 查看個人下注紀錄",
     "**`/rank`** — 查看所有用戶排行榜 Top 10",

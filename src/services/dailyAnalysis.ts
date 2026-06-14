@@ -30,19 +30,24 @@ async function runDailyAnalysis(client: Client): Promise<void> {
     }
 
     const today = new Date()
+    const dateStr = formatDate(today)
     const tomorrow = new Date(today)
     tomorrow.setDate(tomorrow.getDate() + 1)
-    const startDateStr = formatDate(tomorrow)
-    const endDateStr = formatDate(tomorrow)
+    const tomorrowStr = formatDate(tomorrow)
 
-    console.log(`📡 正在從 HKJC 抓取明日 (${startDateStr}) 世界盃賽事...`)
-    let hkjcMatches = await fetchWorldCupMatches(startDateStr, endDateStr)
+    console.log(`📡 正在從 HKJC 抓取今日 (${dateStr}) 世界盃賽事...`)
+    let hkjcMatches = await fetchWorldCupMatches(dateStr, dateStr)
 
     if (hkjcMatches.length === 0) {
-      const futureDate = new Date(tomorrow)
+      console.log(`📡 今日無賽事，嘗試撈取明日 (${tomorrowStr})...`)
+      hkjcMatches = await fetchWorldCupMatches(tomorrowStr, tomorrowStr)
+    }
+
+    if (hkjcMatches.length === 0) {
+      const futureDate = new Date(today)
       futureDate.setDate(futureDate.getDate() + 30)
-      console.log(`📡 明日無賽事，嘗試撈取未來 30 天 (${formatDate(tomorrow)} ~ ${formatDate(futureDate)}) 世界盃賽事...`)
-      hkjcMatches = await fetchWorldCupMatches(startDateStr, formatDate(futureDate))
+      console.log(`📡 明日也無賽事，嘗試撈取未來 30 天 (${dateStr} ~ ${formatDate(futureDate)}) 世界盃賽事...`)
+      hkjcMatches = await fetchWorldCupMatches(dateStr, formatDate(futureDate))
       if (hkjcMatches.length === 0) {
         await channel.send("📭 暫無世界盃賽程資料。")
         return
@@ -123,6 +128,20 @@ export async function analyzeAndPost(
         oddsSummary = had.combinations
           .map((c) => `${c.name}: ${c.odds}`)
           .join(", ")
+      }
+
+      const hdc = oddsData["HDC"] as
+        | { combinations?: Array<{ str: string; name: string; odds: number; status?: string; condition?: string }> }
+        | undefined
+      const hdcCombos = hdc?.combinations
+      if (hdcCombos) {
+        const hdcSummary = hdcCombos
+          .filter((c) => !c.status || c.status === "AVAILABLE")
+          .map((c) => `${c.name}${c.condition ? `(${c.condition})` : ""}: ${c.odds}`)
+          .join(", ")
+        if (hdcSummary) {
+          oddsSummary += (oddsSummary ? " | " : "") + "讓球: " + hdcSummary
+        }
       }
     }
     return {

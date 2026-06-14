@@ -46,7 +46,8 @@ model Bet {
   matchId    String
   amount     Float
   odds       Float
-  prediction String   // "home", "away", "draw"
+  betType    String   @default("HAD")   // HAD | HDC
+  prediction String
   status     String   @default("pending") // pending, won, lost
   createdAt  DateTime @default(now())
 

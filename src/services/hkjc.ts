@@ -25,6 +25,7 @@ export interface HkjcOddsCombination {
   name: string
   odds: number
   status: string
+  condition?: string
 }
 
 /**
@@ -89,6 +90,7 @@ function transformMatch(match: FootballMatch): HkjcMatchData {
           name: comb.selections.map((s) => s.name_ch).join(" / "),
           odds: parseFloat(comb.currentOdds),
           status: comb.status,
+          condition: line.condition || undefined,
         }))
       ),
     }
