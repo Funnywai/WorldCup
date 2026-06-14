@@ -13,17 +13,16 @@ import { requireAuth, requireAdmin, hashPassword, verifyPassword } from "../serv
 import { fetchWorldCupMatches } from "../services/hkjc"
 import { upsertMatchesToDb, analyzeAndPost, formatDate } from "../services/dailyAnalysis"
 
+function flipPart(part: string): string {
+  if (part.startsWith("-")) return "+" + part.slice(1)
+  if (part.startsWith("+")) return "-" + part.slice(1)
+  if (part === "0" || part === "0.0") return part
+  return "-" + part
+}
+
 function flipCondition(condition: string): string {
-  if (!condition.includes("/")) {
-    if (condition.startsWith("-")) return "+" + condition.slice(1)
-    if (condition === "0" || condition === "0.0") return condition
-    return "-" + condition
-  }
-  return condition.split("/").map((part) => {
-    if (part.startsWith("-")) return "+" + part.slice(1)
-    if (part === "0" || part === "0.0") return part
-    return "-" + part
-  }).join("/")
+  if (!condition.includes("/")) return flipPart(condition)
+  return condition.split("/").map(flipPart).join("/")
 }
 
 export async function onInteractionCreate(
@@ -92,10 +91,11 @@ async function handleAutocomplete(
       endOfTomorrow.setDate(endOfTomorrow.getDate() + 1)
       endOfTomorrow.setHours(23, 59, 59, 999)
 
+      const threeHoursAgo = new Date(now.getTime() - 3 * 3600000)
       const matches = await prisma.match.findMany({
         where: {
-          startTime: { gte: now, lte: endOfTomorrow },
-          status: "scheduled",
+          status: { in: ["scheduled", "live"] },
+          startTime: { gte: threeHoursAgo, lte: endOfTomorrow },
         },
         orderBy: { startTime: "asc" },
       })
@@ -600,8 +600,8 @@ async function handleBetPlace(
       await interaction.editReply("❌ 找不到該比賽，請確認比賽 ID 是否正確。")
       return
     }
-    if (match.status !== "scheduled") {
-      await interaction.editReply("❌ 該比賽已開始或已結束，無法下注。")
+    if (match.status === "finished") {
+      await interaction.editReply("❌ 該比賽已結束，無法下注。")
       return
     }
 
@@ -910,13 +910,15 @@ async function handleFetch(
         const hdcCombos = hdc?.combinations
         if (hdcCombos) {
           const conds = [...new Set(hdcCombos.filter(c => c.status === "AVAILABLE" && c.condition).map(c => c.condition!))]
-          const hdcParts = conds.map((cond) => {
+          const condsShown = conds.slice(0, 2)
+          const hdcParts = condsShown.map((cond) => {
             const h = hdcCombos.find((c) => c.condition === cond && c.str === "H")
             const a = hdcCombos.find((c) => c.condition === cond && c.str === "A")
             return `主 ${cond} (${h?.odds.toFixed(2) ?? "—"}) | 客 ${flipCondition(cond)} (${a?.odds.toFixed(2) ?? "—"})`
           })
+          const hdcSuffix = conds.length > 2 ? ` ...共 ${conds.length} 個盤口` : ""
           if (hdcParts.length > 0) {
-            oddsLines.push(`⚖️ ${hdcParts.join(" | ")}`)
+            oddsLines.push(`⚖️ ${hdcParts.join(" | ")}${hdcSuffix}`)
           }
         }
       }
@@ -1008,10 +1010,11 @@ async function queryUpcomingMatches() {
   endOfTomorrow.setDate(endOfTomorrow.getDate() + 1)
   endOfTomorrow.setHours(23, 59, 59, 999)
 
+  const threeHoursAgo = new Date(now.getTime() - 3 * 3600000)
   return prisma.match.findMany({
     where: {
-      startTime: { gte: now, lte: endOfTomorrow },
-      status: "scheduled",
+      status: { in: ["scheduled", "live"] },
+      startTime: { gte: threeHoursAgo, lte: endOfTomorrow },
     },
     orderBy: { startTime: "asc" },
   })
@@ -1042,13 +1045,15 @@ function buildMatchEmbed(matches: Awaited<ReturnType<typeof queryUpcomingMatches
       const hdcCombos = hdc?.combinations
       if (hdcCombos) {
         const conds = [...new Set(hdcCombos.filter(c => c.status === "AVAILABLE" && c.condition).map(c => c.condition!))]
-        const hdcParts = conds.map((cond) => {
+        const condsShown = conds.slice(0, 2)
+        const hdcParts = condsShown.map((cond) => {
           const h = hdcCombos.find((c) => c.condition === cond && c.str === "H")
           const a = hdcCombos.find((c) => c.condition === cond && c.str === "A")
           return `主 ${cond} (${h?.odds.toFixed(2) ?? "—"}) | 客 ${flipCondition(cond)} (${a?.odds.toFixed(2) ?? "—"})`
         })
+        const hdcSuffix = conds.length > 2 ? ` ...共 ${conds.length} 個盤口` : ""
         if (hdcParts.length > 0) {
-          oddsLines.push(`⚖️ ${hdcParts.join(" | ")}`)
+          oddsLines.push(`⚖️ ${hdcParts.join(" | ")}${hdcSuffix}`)
         }
       }
     }
