@@ -41,6 +41,38 @@ export const betCommand = new SlashCommandBuilder()
   )
   .addSubcommand((sub) =>
     sub
+      .setName("other")
+      .setDescription("手動輸入賠率下注")
+      .addStringOption((opt) =>
+        opt
+          .setName("match")
+          .setDescription("選擇比賽")
+          .setRequired(true)
+          .setAutocomplete(true)
+      )
+      .addNumberOption((opt) =>
+        opt
+          .setName("odds")
+          .setDescription("手動輸入賠率（如 2.50）")
+          .setRequired(true)
+          .setMinValue(0.01)
+      )
+      .addNumberOption((opt) =>
+        opt
+          .setName("amount")
+          .setDescription("下注金額（用於計算盈虧）")
+          .setRequired(true)
+          .setMinValue(1)
+      )
+      .addStringOption((opt) =>
+        opt
+          .setName("prediction")
+          .setDescription("自訂預測文字（選填，如「巴西勝」）")
+          .setRequired(false)
+      )
+  )
+  .addSubcommand((sub) =>
+    sub
       .setName("history")
       .setDescription("查詢你的過往下注紀錄")
       .addIntegerOption((opt) =>

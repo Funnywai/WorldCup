@@ -63,11 +63,8 @@ export async function onInteractionCreate(
     case "help":
       await handleHelp(interaction)
       break
-    case "fetch":
-      await handleFetch(interaction)
-      break
     case "match":
-      await handleMatch(interaction)
+      await handleFetch(interaction)
       break
     case "analyst":
       await handleAnalyst(interaction)
@@ -86,7 +83,17 @@ async function handleAutocomplete(
     const focusedOption = interaction.options.getFocused(true)
 
     if (focusedOption.name === "match") {
-      const matches = await queryUpcomingMatches()
+      const threeHoursAgo = new Date(Date.now() - 3 * 60 * 60 * 1000)
+
+      const matches = await prisma.match.findMany({
+        where: {
+          OR: [
+            { status: "scheduled" },
+            { status: "live", startTime: { gt: threeHoursAgo } },
+          ],
+        },
+        orderBy: { startTime: "asc" },
+      })
 
       const choices = matches.map((m) => ({
         name: `${m.homeTeam} vs ${m.awayTeam}`,
@@ -562,6 +569,9 @@ async function handleBet(
     case "place":
       await handleBetPlace(interaction, user)
       break
+    case "other":
+      await handleBetOther(interaction, user)
+      break
     case "history":
       await handleBetHistory(interaction, user)
       break
@@ -588,7 +598,7 @@ async function handleBetPlace(
       await interaction.editReply("❌ 找不到該比賽，請確認比賽 ID 是否正確。")
       return
     }
-    if (match.status === "finished") {
+    if (!["scheduled", "live"].includes(match.status)) {
       await interaction.editReply("❌ 該比賽已結束，無法下注。")
       return
     }
@@ -686,6 +696,80 @@ async function handleBetPlace(
   }
 }
 
+async function handleBetOther(
+  interaction: ChatInputCommandInteraction,
+  user: Awaited<ReturnType<typeof requireAuth>>
+): Promise<void> {
+  try {
+    await interaction.deferReply()
+
+    const matchId = interaction.options.getString("match", true)
+    const manualOdds = interaction.options.getNumber("odds", true)
+    const amount = interaction.options.getNumber("amount", true)
+    const prediction = interaction.options.getString("prediction") ?? ""
+
+    if (!user) return
+
+    const match = await prisma.match.findUnique({ where: { id: matchId } })
+    if (!match) {
+      await interaction.editReply("❌ 找不到該比賽，請確認比賽 ID 是否正確。")
+      return
+    }
+    if (!["scheduled", "live"].includes(match.status)) {
+      await interaction.editReply("❌ 該比賽已結束，無法下注。")
+      return
+    }
+
+    const predictionText = prediction || "手動下注"
+
+    const u = user as NonNullable<typeof user>
+
+    await prisma.$transaction([
+      prisma.user.update({
+        where: { id: u.id },
+        data: { totalBets: { increment: 1 } },
+      }),
+      prisma.bet.create({
+        data: {
+          userId: u.id,
+          matchId: match.id,
+          amount,
+          odds: manualOdds,
+          betType: "OTHER",
+          prediction,
+          status: "pending",
+        },
+      }),
+    ])
+
+    const embed = new EmbedBuilder()
+      .setColor(0x00aaff)
+      .setTitle("✅ 下注成功！")
+      .addFields(
+        {
+          name: "比賽",
+          value: `${match.homeTeam} vs ${match.awayTeam}`,
+          inline: false,
+        },
+        { name: "玩法", value: "其他（手動賠率）", inline: true },
+        { name: "預測", value: predictionText, inline: true },
+        { name: "金額", value: `$${amount.toLocaleString()}`, inline: true },
+        { name: "賠率", value: manualOdds.toFixed(2), inline: true }
+      )
+      .setTimestamp()
+
+    await interaction.editReply({ embeds: [embed] })
+  } catch (error) {
+    console.error("❌ /bet other 執行錯誤:", error)
+    const content = "❌ 下注時發生錯誤，請稍後再試。"
+    if (interaction.deferred) {
+      await interaction.editReply(content)
+    } else {
+      await interaction.reply({ content, ephemeral: true })
+    }
+  }
+}
+
 async function handleBetHistory(
   interaction: ChatInputCommandInteraction,
   user: Awaited<ReturnType<typeof requireAuth>>
@@ -726,6 +810,7 @@ async function handleBetHistory(
     const typeLabels: Record<string, string> = {
       HAD: "主客和",
       HDC: "讓球",
+      OTHER: "其他",
     }
 
     const description = bets
@@ -836,12 +921,12 @@ async function handleRank(
   }
 }
 
-// ─── /fetch ────────────────────────────────────────────────────────────────
+// ─── /match ────────────────────────────────────────────────────────────────
 
 async function handleFetch(
   interaction: ChatInputCommandInteraction
 ): Promise<void> {
-  if (!(await requireAdmin(interaction))) return
+  if (!(await requireAuth(interaction))) return
 
   try {
     await interaction.deferReply()
@@ -851,11 +936,11 @@ async function handleFetch(
     tomorrowDate.setDate(tomorrowDate.getDate() + 1)
     const tomorrowStr = formatDate(tomorrowDate)
 
-    console.log(`📡 [/fetch] 正在從 HKJC 抓取今日 (${todayStr}) 世界盃賽事...`)
+    console.log(`📡 [/match] 正在從 HKJC 抓取今日 (${todayStr}) 世界盃賽事...`)
     let matches = await fetchWorldCupMatches(todayStr, todayStr)
 
     if (matches.length === 0) {
-      console.log(`📡 [/fetch] 今日無賽事，嘗試撈取明日 (${tomorrowStr})...`)
+      console.log(`📡 [/match] 今日無賽事，嘗試撈取明日 (${tomorrowStr})...`)
       matches = await fetchWorldCupMatches(tomorrowStr, tomorrowStr)
     }
 
@@ -925,36 +1010,8 @@ async function handleFetch(
 
     await interaction.editReply({ embeds: [embed] })
   } catch (error) {
-    console.error("❌ /fetch 執行錯誤:", error)
-    const content = "❌ 同步賽程時發生錯誤，請稍後再試。"
-    if (interaction.deferred) {
-      await interaction.editReply(content)
-    } else {
-      await interaction.reply({ content, ephemeral: true })
-    }
-  }
-}
-
-// ─── /match ────────────────────────────────────────────────────────────────
-
-async function handleMatch(
-  interaction: ChatInputCommandInteraction
-): Promise<void> {
-  try {
-    await interaction.deferReply()
-
-    const matches = await queryUpcomingMatches()
-    if (matches.length === 0) {
-      await interaction.editReply("📭 目前沒有即將到來的賽程。")
-      return
-    }
-
-    const embed = buildMatchEmbed(matches)
-    const row = buildMatchActionRow()
-    await interaction.editReply({ embeds: [embed], components: [row] })
-  } catch (error) {
     console.error("❌ /match 執行錯誤:", error)
-    const content = "❌ 查詢賽程時發生錯誤，請稍後再試。"
+    const content = "❌ 同步賽程時發生錯誤，請稍後再試。"
     if (interaction.deferred) {
       await interaction.editReply(content)
     } else {
@@ -1073,7 +1130,7 @@ function buildMatchEmbed(matches: Awaited<ReturnType<typeof queryUpcomingMatches
     .setColor(0x00aaff)
     .setTitle("📅 即將到來的賽程")
     .setDescription(matchLines.join("\n\n"))
-    .setFooter({ text: "可使用 /bet place 進行下注" })
+    .setFooter({ text: "可使用 /bet place 或 /bet other 進行下注" })
     .setTimestamp()
 }
 
@@ -1100,7 +1157,7 @@ async function handleAnalyst(
 
     if (matches.length === 0) {
       await interaction.editReply(
-        "❌ 目前沒有待分析的賽程。請先執行 `/fetch` 拉取賽程。"
+        "❌ 目前沒有待分析的賽程。請先執行 `/match` 拉取賽程。"
       )
       return
     }
@@ -1134,10 +1191,11 @@ async function handleHelp(
   const generalCommands = [
     "**`/login <username> <password>`** — 登入或註冊帳號",
     "**`/stat`** — 查詢個人下注統計與累計盈虧",
-    "**`/match`** — 查看即將到來的世界盃賽程與賠率",
-    "**`/bet place <prediction> <amount>`** — 對比賽下注（從選單選擇比賽）",
+    "**`/bet place <prediction> <amount>`** — 對比賽下注（主客和 / 讓球，自動帶入賠率）",
+    "**`/bet other <odds> <amount> [prediction]`** — 手動輸入賠率下注",
     "**`/bet history [page]`** — 查看個人下注紀錄",
     "**`/rank`** — 查看所有用戶排行榜 Top 10",
+    "**`/match`** — 從 HKJC 同步世界盃賽程與賠率",
     "**`/help`** — 顯示此說明",
   ]
 
@@ -1148,7 +1206,6 @@ async function handleHelp(
     "**`/admin list`** — 列出所有用戶",
     "**`/admin resetpw <username> <new_password>`** — 重設密碼",
     "**`/admin delete <username>`** — 刪除用戶及下注紀錄",
-    "**`/fetch`** — 從 HKJC 同步明日世界盃賽程與賠率",
     "**`/analyst`** — 對明日比賽執行 DeepSeek AI 分析",
   ]
 

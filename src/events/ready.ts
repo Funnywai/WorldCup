@@ -5,9 +5,8 @@ import { loginCommand } from "../commands/login"
 import { adminCommand } from "../commands/admin"
 import { rankCommand } from "../commands/rank"
 import { helpCommand } from "../commands/help"
-import { fetchCommand } from "../commands/fetch"
-import { analystCommand } from "../commands/analyst"
 import { matchCommand } from "../commands/match"
+import { analystCommand } from "../commands/analyst"
 
 const commands = [
   loginCommand,
@@ -17,7 +16,6 @@ const commands = [
   rankCommand,
   helpCommand,
   matchCommand,
-  fetchCommand,
   analystCommand,
 ].map((cmd) => cmd.toJSON())
 
