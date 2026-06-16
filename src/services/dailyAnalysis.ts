@@ -90,6 +90,31 @@ export async function upsertMatchesToDb(
   )
 }
 
+export async function analyzeSingleMatch(
+  matchRecord: Match,
+  channel: TextChannel
+): Promise<AnalysisLogResult> {
+  const historicalContext = await buildHistoricalContext([matchRecord])
+  const matchData = buildMatchForAnalysis(matchRecord)
+
+  console.log(`🤖 正在分析 ${matchRecord.homeTeam} vs ${matchRecord.awayTeam}...`)
+  const analysis = await generateMatchAnalysis([matchData], historicalContext)
+
+  const log = await prisma.analysisLog.create({
+    data: {
+      matchId: matchRecord.id,
+      deepseekOutput: analysis,
+    },
+  })
+
+  const embed = buildAnalysisEmbed(matchRecord, analysis)
+
+  await channel.send({ embeds: [embed] })
+  console.log(`✅ 已發送 ${matchRecord.homeTeam} vs ${matchRecord.awayTeam} 分析`)
+
+  return log as AnalysisLogResult
+}
+
 export async function analyzeAndPost(
   client: Client,
   matchRecords: Match[]
@@ -110,72 +135,134 @@ export async function analyzeAndPost(
     (a, b) => a.startTime.getTime() - b.startTime.getTime()
   )
 
-  const matchesForAnalysis = sorted.map((match) => {
-    const oddsData = match.oddsData as Record<string, unknown> | null
-    let oddsSummary = ""
-    if (oddsData) {
-      const had = oddsData["HAD"] as
-        | { combinations?: Array<{ str: string; name: string; odds: number }> }
-        | undefined
-      if (had?.combinations) {
-        oddsSummary = had.combinations
-          .map((c) => `${c.name}: ${c.odds}`)
-          .join(", ")
-      }
+  const historicalContext = await buildHistoricalContext(sorted)
 
-      const hdc = oddsData["HDC"] as
-        | { combinations?: Array<{ str: string; name: string; odds: number; status?: string; condition?: string }> }
-        | undefined
-      const hdcCombos = hdc?.combinations
-      if (hdcCombos) {
-        const hdcSummary = hdcCombos
-          .filter((c) => !c.status || c.status === "AVAILABLE")
-          .map((c) => `${c.name}${c.condition ? `(${c.condition})` : ""}: ${c.odds}`)
-          .join(", ")
-        if (hdcSummary) {
-          oddsSummary += (oddsSummary ? " | " : "") + "讓球: " + hdcSummary
-        }
+  for (const match of sorted) {
+    const matchData = buildMatchForAnalysis(match)
+
+    console.log(`🤖 正在分析 ${match.homeTeam} vs ${match.awayTeam}...`)
+    const analysis = await generateMatchAnalysis([matchData], historicalContext)
+
+    await prisma.analysisLog.create({
+      data: {
+        matchId: match.id,
+        deepseekOutput: analysis,
+      },
+    })
+
+    await channel.send({ embeds: [buildAnalysisEmbed(match, analysis)] })
+  }
+
+  console.log(`✅ 每日分析已發送 ${sorted.length} 場至頻道 ${channel.id}`)
+}
+
+function buildMatchForAnalysis(match: Match) {
+  const oddsData = match.oddsData as Record<string, unknown> | null
+  let oddsSummary = ""
+  if (oddsData) {
+    const had = oddsData["HAD"] as
+      | { combinations?: Array<{ str: string; name: string; odds: number }> }
+      | undefined
+    if (had?.combinations) {
+      oddsSummary = had.combinations
+        .map((c) => `${c.name}: ${c.odds}`)
+        .join(", ")
+    }
+
+    const hdc = oddsData["HDC"] as
+      | { combinations?: Array<{ str: string; name: string; odds: number; status?: string; condition?: string }> }
+      | undefined
+    const hdcCombos = hdc?.combinations
+    if (hdcCombos) {
+      const hdcSummary = hdcCombos
+        .filter((c) => !c.status || c.status === "AVAILABLE")
+        .map((c) => `${c.name}${c.condition ? `(${c.condition})` : ""}: ${c.odds}`)
+        .join(", ")
+      if (hdcSummary) {
+        oddsSummary += (oddsSummary ? " | " : "") + "讓球: " + hdcSummary
       }
     }
-    return {
-      homeTeam: match.homeTeam,
-      awayTeam: match.awayTeam,
-      startTime: match.startTime,
-      oddsSummary,
-    }
+  }
+  return {
+    homeTeam: match.homeTeam,
+    awayTeam: match.awayTeam,
+    startTime: match.startTime,
+    oddsSummary,
+  }
+}
+
+function buildAnalysisEmbed(match: Match, analysis: string): EmbedBuilder {
+  const time = match.startTime.toLocaleString("zh-TW", {
+    timeZone: "Asia/Taipei",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
   })
 
-  console.log(`🤖 正在呼叫 DeepSeek API 分析 ${matchRecords.length} 場比賽...`)
-  const analysis = await generateMatchAnalysis(matchesForAnalysis)
+  const truncated =
+    analysis.length > 3800
+      ? analysis.slice(0, 3800) + "\n\n⚠️ 分析內容過長，已截斷。完整內容請查詢資料庫。"
+      : analysis
 
-  await prisma.analysisLog.create({
-    data: {
-      matchId: matchRecords[0].id,
-      deepseekOutput: analysis,
-    },
-  })
-
-  const tomorrow = new Date()
-  tomorrow.setDate(tomorrow.getDate() + 1)
-
-  const embed = new EmbedBuilder()
+  return new EmbedBuilder()
     .setColor(0x1e90ff)
-    .setTitle("🏆 世界盃 2026 每日賽事分析")
-    .setDescription(
-      `📅 賽事日期：${tomorrow.toLocaleDateString("zh-TW", {
-        year: "numeric",
-        month: "long",
-        day: "numeric",
-        weekday: "long",
-      })}\n\n${analysis.length > 4000 ? analysis.slice(0, 4000) + "\n\n⚠️ 分析內容過長，已截斷。完整內容請查詢資料庫。" : analysis}`
-    )
+    .setTitle(`${match.homeTeam} vs ${match.awayTeam}`)
+    .setDescription(`🕐 ${time}\n\n${truncated}`)
     .setFooter({
       text: "分析由 DeepSeek AI 生成 | 賠率來源：香港賽馬會 | 僅供參考，請理性投注",
     })
     .setTimestamp()
+}
 
-  await channel.send({ embeds: [embed] })
-  console.log(`✅ 每日分析已發送至頻道 ${channel.id}`)
+async function buildHistoricalContext(matches: Match[]): Promise<string> {
+  const finishedMatches = await prisma.match.findMany({
+    where: { status: "finished", result: { not: null } },
+    orderBy: { startTime: "desc" },
+    take: 50,
+  })
+  if (finishedMatches.length === 0) return ""
+
+  const lines: string[] = []
+  const teamNames = new Set<string>()
+  matches.forEach((m) => {
+    teamNames.add(m.homeTeam)
+    teamNames.add(m.awayTeam)
+  })
+
+  for (const team of teamNames) {
+    const recent = finishedMatches
+      .filter((m) => m.homeTeam === team || m.awayTeam === team)
+      .slice(0, 5)
+    if (recent.length > 0) {
+      const form = recent
+        .map((m) => {
+          const isHome = m.homeTeam === team
+          const opponent = isHome ? m.awayTeam : m.homeTeam
+          const score = m.result || "?"
+          return `${isHome ? "[主]" : "[客]"} ${opponent} (${score})`
+        })
+        .join(" → ")
+      lines.push(`${team} 近況: ${form}`)
+    }
+  }
+
+  for (const m of matches) {
+    const h2h = finishedMatches.filter(
+      (fm) =>
+        (fm.homeTeam === m.homeTeam && fm.awayTeam === m.awayTeam) ||
+        (fm.homeTeam === m.awayTeam && fm.awayTeam === m.homeTeam)
+    )
+    if (h2h.length > 0) {
+      const h2hStr = h2h
+        .map((fm) => `${fm.homeTeam} ${fm.result} ${fm.awayTeam}`)
+        .join(" | ")
+      lines.push(`⚔ ${m.homeTeam} vs ${m.awayTeam} 往績: ${h2hStr}`)
+    }
+  }
+
+  return lines.join("\n")
 }
 
 export function formatDate(date: Date): string {
@@ -183,6 +270,14 @@ export function formatDate(date: Date): string {
   const mm = String(date.getMonth() + 1).padStart(2, "0")
   const dd = String(date.getDate()).padStart(2, "0")
   return `${yyyy}-${mm}-${dd}`
+}
+
+export interface AnalysisLogResult {
+  id: string
+  matchId: string
+  deepseekOutput: string
+  status: string
+  createdAt: Date
 }
 
 export function startMatchFetchCron(): void {

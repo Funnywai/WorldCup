@@ -7,11 +7,12 @@ import {
   ActionRowBuilder,
   ButtonStyle,
   ButtonInteraction,
+  TextChannel,
 } from "discord.js"
 import prisma from "../db/prisma"
 import { requireAuth, requireAdmin, hashPassword, verifyPassword } from "../services/auth"
 import { fetchWorldCupMatches, fetchRunningMatches } from "../services/hkjc"
-import { upsertMatchesToDb, analyzeAndPost, formatDate } from "../services/dailyAnalysis"
+import { upsertMatchesToDb, analyzeAndPost, analyzeSingleMatch, formatDate } from "../services/dailyAnalysis"
 
 function flipPart(part: string): string {
   if (part.startsWith("-")) return "+" + part.slice(1)
@@ -192,6 +193,149 @@ async function handleAutocomplete(
 
         await interaction.respond(choices)
       }
+    }
+  }
+
+  if (commandName === "analyst") {
+    const focusedOption = interaction.options.getFocused(true)
+
+    if (focusedOption.name === "match_id") {
+      const threeHoursAgo = new Date(Date.now() - 3 * 60 * 60 * 1000)
+      const matches = await prisma.match.findMany({
+        where: {
+          OR: [
+            { status: "scheduled" },
+            { status: "live", startTime: { gt: threeHoursAgo } },
+          ],
+        },
+        orderBy: { startTime: "asc" },
+      })
+
+      const choices = matches.map((m) => ({
+        name: `${m.homeTeam} vs ${m.awayTeam}`,
+        value: m.id,
+      }))
+      await interaction.respond(choices)
+    }
+
+    if (focusedOption.name === "analysis_id") {
+      const logs = await prisma.analysisLog.findMany({
+        include: { match: true },
+        orderBy: { createdAt: "desc" },
+        take: 25,
+      })
+
+      const choices = logs.map((l) => ({
+        name: `${l.match.homeTeam} vs ${l.match.awayTeam} (${l.createdAt.toLocaleDateString("zh-TW")})`,
+        value: l.id,
+      }))
+      await interaction.respond(choices)
+    }
+  }
+
+  if (commandName === "admin") {
+    const focusedOption = interaction.options.getFocused(true)
+
+    if (focusedOption.name === "username") {
+      const users = await prisma.user.findMany({
+        where: { status: "active" },
+        orderBy: { username: "asc" },
+      })
+      await interaction.respond(
+        users.map((u) => ({ name: u.username, value: u.username }))
+      )
+    }
+
+    if (focusedOption.name === "match") {
+      const threeHoursAgo = new Date(Date.now() - 3 * 60 * 60 * 1000)
+      const matches = await prisma.match.findMany({
+        where: {
+          OR: [
+            { status: "scheduled" },
+            { status: "live", startTime: { gt: threeHoursAgo } },
+          ],
+        },
+        orderBy: { startTime: "asc" },
+      })
+      await interaction.respond(
+        matches.map((m) => ({
+          name: `${m.homeTeam} vs ${m.awayTeam}`,
+          value: m.id,
+        }))
+      )
+    }
+
+    if (focusedOption.name === "prediction") {
+      const betType = interaction.options.getString("type")
+      if (!betType) { await interaction.respond([]); return }
+
+      const matchId = interaction.options.getString("match")
+      if (!matchId) { await interaction.respond([]); return }
+
+      const match = await prisma.match.findUnique({ where: { id: matchId } })
+      if (!match) { await interaction.respond([]); return }
+
+      const oddsData = match.oddsData as Record<string, unknown> | null
+
+      if (betType === "HAD") {
+        let homeOdds: number | undefined
+        let drawOdds: number | undefined
+        let awayOdds: number | undefined
+        const had = oddsData?.["HAD"] as
+          | { combinations?: Array<{ str: string; odds: number }> }
+          | undefined
+        if (had?.combinations) {
+          homeOdds = had.combinations.find((c) => c.str === "H")?.odds
+          drawOdds = had.combinations.find((c) => c.str === "D")?.odds
+          awayOdds = had.combinations.find((c) => c.str === "A")?.odds
+        }
+        await interaction.respond([
+          { name: `主隊勝${homeOdds !== undefined ? ` (${homeOdds.toFixed(2)})` : ""}`, value: "home" },
+          { name: `平手${drawOdds !== undefined ? ` (${drawOdds.toFixed(2)})` : ""}`, value: "draw" },
+          { name: `客隊勝${awayOdds !== undefined ? ` (${awayOdds.toFixed(2)})` : ""}`, value: "away" },
+        ])
+        return
+      }
+
+      if (betType === "HDC") {
+        const hdc = oddsData?.["HDC"] as
+          | { combinations?: Array<{ str: string; name: string; odds: number; status: string; condition?: string }> }
+          | undefined
+        if (!hdc?.combinations) { await interaction.respond([]); return }
+
+        await interaction.respond(
+          hdc.combinations
+            .filter((c) => c.status === "AVAILABLE")
+            .map((c) => {
+              const teamName = c.str === "H" ? match.homeTeam : match.awayTeam
+              const displayCond = c.str === "H" ? c.condition : (c.condition ? flipCondition(c.condition) : undefined)
+              const suffix = displayCond ? ` ${displayCond}` : ""
+              return {
+                name: `${teamName}${suffix} — ${c.odds.toFixed(2)}`,
+                value: c.str,
+              }
+            })
+        )
+      }
+    }
+  }
+
+  if (commandName === "check") {
+    const focusedOption = interaction.options.getFocused(true)
+
+    if (focusedOption.name === "bet_id") {
+      const bets = await prisma.bet.findMany({
+        where: { status: "pending" },
+        include: { match: true, user: { select: { username: true } } },
+        orderBy: { createdAt: "asc" },
+        take: 25,
+      })
+      await interaction.respond(
+        bets.map((b) => ({
+          name: `${b.user.username} | ${b.match.homeTeam} vs ${b.match.awayTeam} | $${b.amount}`,
+          value: b.id,
+        }))
+      )
     }
   }
 }
@@ -1156,32 +1300,182 @@ async function handleAnalyst(
 ): Promise<void> {
   if (!(await requireAdmin(interaction))) return
 
+  const subcommand = interaction.options.getSubcommand()
+
   try {
-    await interaction.deferReply()
-
-    const matches = await queryUpcomingMatches()
-
-    if (matches.length === 0) {
-      await interaction.editReply(
-        "❌ 目前沒有待分析的賽程。請先執行 `/match` 拉取賽程。"
-      )
-      return
+    switch (subcommand) {
+      case "run":
+        await handleAnalystRun(interaction)
+        break
+      case "match":
+        await handleAnalystMatch(interaction)
+        break
+      case "history":
+        await handleAnalystHistory(interaction)
+        break
+      case "result":
+        await handleAnalystResult(interaction)
+        break
     }
-
-    await analyzeAndPost(interaction.client, matches)
-
-    await interaction.editReply(
-      `✅ 分析完成！已將報告送至 <#${process.env.DAILY_PICKS_CHANNEL_ID}>。`
-    )
   } catch (error) {
-    console.error("❌ /analyst 執行錯誤:", error)
-    const content = "❌ 執行分析時發生錯誤，請稍後再試。"
+    console.error(`❌ /analyst ${subcommand} 執行錯誤:`, error)
+    const content = "❌ 執行分析操作時發生錯誤，請稍後再試。"
     if (interaction.deferred) {
       await interaction.editReply(content)
-    } else {
+    } else if (!interaction.replied) {
       await interaction.reply({ content, ephemeral: true })
     }
   }
+}
+
+async function handleAnalystRun(
+  interaction: ChatInputCommandInteraction
+): Promise<void> {
+  await interaction.deferReply()
+
+  const matches = await queryUpcomingMatches()
+
+  if (matches.length === 0) {
+    await interaction.editReply(
+      "❌ 目前沒有待分析的賽程。請先執行 `/match` 拉取賽程。"
+    )
+    return
+  }
+
+  await analyzeAndPost(interaction.client, matches)
+
+  await interaction.editReply(
+    `✅ 分析完成！已將 ${matches.length} 場報告送至 <#${process.env.DAILY_PICKS_CHANNEL_ID}>。`
+  )
+}
+
+async function handleAnalystMatch(
+  interaction: ChatInputCommandInteraction
+): Promise<void> {
+  await interaction.deferReply()
+
+  const matchId = interaction.options.getString("match_id", true)
+  const match = await prisma.match.findUnique({ where: { id: matchId } })
+
+  if (!match) {
+    await interaction.editReply("❌ 找不到該比賽。")
+    return
+  }
+
+  const channelId = process.env.DAILY_PICKS_CHANNEL_ID
+  if (!channelId) {
+    await interaction.editReply("❌ 未設定 DAILY_PICKS_CHANNEL_ID。")
+    return
+  }
+
+  const channel = (await interaction.client.channels.fetch(channelId)) as TextChannel
+  if (!channel) {
+    await interaction.editReply(`❌ 找不到頻道 ${channelId}。`)
+    return
+  }
+
+  await analyzeSingleMatch(match, channel)
+
+  await interaction.editReply(
+    `✅ 分析完成！已將 **${match.homeTeam} vs ${match.awayTeam}** 的報告送至 <#${channelId}>。`
+  )
+}
+
+async function handleAnalystHistory(
+  interaction: ChatInputCommandInteraction
+): Promise<void> {
+  const page = interaction.options.getInteger("page") ?? 1
+  const perPage = 5
+
+  const [logs, total] = await Promise.all([
+    prisma.analysisLog.findMany({
+      include: { match: true },
+      orderBy: { createdAt: "desc" },
+      skip: (page - 1) * perPage,
+      take: perPage,
+    }),
+    prisma.analysisLog.count(),
+  ])
+
+  if (logs.length === 0) {
+    await interaction.reply({
+      content: "📭 目前沒有分析紀錄。",
+      ephemeral: true,
+    })
+    return
+  }
+
+  const stats = await prisma.analysisLog.groupBy({
+    by: ["status"],
+    _count: true,
+  })
+  const won = stats.find((s) => s.status === "won")?._count ?? 0
+  const lost = stats.find((s) => s.status === "lost")?._count ?? 0
+  const decided = won + lost
+  const accuracy =
+    decided > 0 ? ((won / decided) * 100).toFixed(1) : "—"
+
+  const lines = logs.map((log) => {
+    const m = log.match
+    const statusEmoji =
+      log.status === "won"
+        ? "✅ 正確"
+        : log.status === "lost"
+          ? "❌ 錯誤"
+          : "⏳ 待判定"
+    const time = new Date(m.startTime).toLocaleString("zh-TW", {
+      timeZone: "Asia/Taipei",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    })
+    return `**${m.homeTeam} vs ${m.awayTeam}** | ${time} | ${statusEmoji}\n　┗ ID: \`${log.id}\``
+  })
+
+  const totalPages = Math.ceil(total / perPage)
+
+  const embed = new EmbedBuilder()
+    .setColor(0x1e90ff)
+    .setTitle(`📋 分析紀錄 (第 ${page}/${totalPages} 頁)`)
+    .setDescription(lines.join("\n\n"))
+    .setFooter({
+      text: `AI 準確率: ${won}W / ${lost}L = ${accuracy}% | 共 ${total} 筆紀錄`,
+    })
+    .setTimestamp()
+
+  await interaction.reply({ embeds: [embed], ephemeral: true })
+}
+
+async function handleAnalystResult(
+  interaction: ChatInputCommandInteraction
+): Promise<void> {
+  const analysisId = interaction.options.getString("analysis_id", true)
+  const outcome = interaction.options.getString("outcome", true)
+
+  const log = await prisma.analysisLog.findUnique({
+    where: { id: analysisId },
+    include: { match: true },
+  })
+
+  if (!log) {
+    await interaction.reply({
+      content: "❌ 找不到該分析紀錄。",
+      ephemeral: true,
+    })
+    return
+  }
+
+  await prisma.analysisLog.update({
+    where: { id: analysisId },
+    data: { status: outcome },
+  })
+
+  const statusText = outcome === "won" ? "✅ 正確" : "❌ 錯誤"
+  await interaction.reply({
+    content: `已將 **${log.match.homeTeam} vs ${log.match.awayTeam}** 的分析標記為 ${statusText}`,
+    ephemeral: true,
+  })
 }
 
 // ─── /help ────────────────────────────────────────────────────────────────

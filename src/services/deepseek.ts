@@ -3,6 +3,8 @@ import OpenAI from "openai"
 const deepseek = new OpenAI({
   baseURL: "https://api.deepseek.com",
   apiKey: process.env.DEEPSEEK_API_KEY,
+  timeout: 30000,
+  maxRetries: 2,
 })
 
 interface MatchForAnalysis {
@@ -16,7 +18,8 @@ interface MatchForAnalysis {
  * 呼叫 DeepSeek API 生成比賽分析與投注建議（繁體中文）
  */
 export async function generateMatchAnalysis(
-  matches: MatchForAnalysis[]
+  matches: MatchForAnalysis[],
+  historicalContext?: string
 ): Promise<string> {
   if (matches.length === 0) {
     return "今日沒有安排賽程。"
@@ -33,7 +36,7 @@ export async function generateMatchAnalysis(
     .join("\n")
 
   const systemPrompt = `你是一位專業的足球分析師，擅長 2026 世界盃賽事分析與博弈預測。
-請根據提供的今日賽程與香港賽馬會（HKJC）賠率，生成一份專業、數據導向的分析報告。
+請根據提供的今日賽程、歷史對戰紀錄與香港賽馬會（HKJC）賠率，生成一份專業、數據導向的分析報告。
 報告必須使用**繁體中文**撰寫。
 
 # 輸出格式要求
@@ -45,7 +48,11 @@ export async function generateMatchAnalysis(
 
 最後附上今日總體推薦摘要。`
 
-  const userPrompt = `今日賽程如下（所有時間為台灣時間）：\n\n${matchList}\n\n請為以上比賽生成完整分析報告。`
+  let userPrompt = `今日賽程如下（所有時間為台灣時間）：\n\n${matchList}`
+  if (historicalContext) {
+    userPrompt += `\n\n--- 歷史數據參考 ---\n${historicalContext}`
+  }
+  userPrompt += `\n\n請為以上比賽生成完整分析報告。`
 
   const response = await (deepseek.chat.completions.create as any)({
     model: "deepseek-v4-flash",
@@ -53,8 +60,9 @@ export async function generateMatchAnalysis(
       { role: "system", content: systemPrompt },
       { role: "user", content: userPrompt },
     ],
+    temperature: 0.8,
     reasoning_effort: "high",
-    max_tokens: 4096,
+    max_tokens: 8192,
     extra_body: {
       thinking: { type: "enabled" },
     },
