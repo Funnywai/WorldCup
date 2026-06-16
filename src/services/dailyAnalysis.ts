@@ -10,7 +10,7 @@ export function startDailyAnalysisCron(client: Client): void {
   cron.schedule(cronTime, async () => {
     console.log(`🔍 [Cron] 開始執行每日比賽分析 (${cronTime})...`)
     await runDailyAnalysis(client)
-  })
+  }, { timezone: "Asia/Hong_Kong" })
 
   console.log(`⏰ 每日分析排程已設定：${cronTime}`)
 }
@@ -209,7 +209,7 @@ export function startMatchFetchCron(): void {
     } catch (error) {
       console.error("❌ [Cron Fetch] 背景同步失敗:", error)
     }
-  })
+  }, { timezone: "Asia/Hong_Kong" })
 
   console.log(`⏰ 背景賠率同步排程已設定：${CRON_FETCH}`)
 }

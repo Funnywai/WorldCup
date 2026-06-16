@@ -7,6 +7,8 @@ import { rankCommand } from "../commands/rank"
 import { helpCommand } from "../commands/help"
 import { matchCommand } from "../commands/match"
 import { analystCommand } from "../commands/analyst"
+import { scoreCommand } from "../commands/score"
+import { checkCommand } from "../commands/check"
 
 const commands = [
   loginCommand,
@@ -17,6 +19,8 @@ const commands = [
   helpCommand,
   matchCommand,
   analystCommand,
+  scoreCommand,
+  checkCommand,
 ].map((cmd) => cmd.toJSON())
 
 export async function registerCommands(client: Client): Promise<void> {

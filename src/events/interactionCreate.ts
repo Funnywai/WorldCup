@@ -10,7 +10,7 @@ import {
 } from "discord.js"
 import prisma from "../db/prisma"
 import { requireAuth, requireAdmin, hashPassword, verifyPassword } from "../services/auth"
-import { fetchWorldCupMatches } from "../services/hkjc"
+import { fetchWorldCupMatches, fetchRunningMatches } from "../services/hkjc"
 import { upsertMatchesToDb, analyzeAndPost, formatDate } from "../services/dailyAnalysis"
 
 function flipPart(part: string): string {
@@ -68,6 +68,12 @@ export async function onInteractionCreate(
       break
     case "analyst":
       await handleAnalyst(interaction)
+      break
+    case "score":
+      await handleScore(interaction)
+      break
+    case "check":
+      await handleCheck(interaction)
       break
   }
 }
@@ -1065,7 +1071,7 @@ async function queryUpcomingMatches() {
 
     matches = await prisma.match.findMany({
       where: {
-        status: "scheduled",
+        status: { in: ["scheduled", "live"] },
         startTime: { gte: startOfTomorrow, lte: endOfTomorrow },
       },
       orderBy: { startTime: "asc" },
@@ -1231,4 +1237,471 @@ async function handleHelp(
     .setTimestamp()
 
   await interaction.reply({ embeds: [embed], ephemeral: true })
+}
+
+// ─── /score ────────────────────────────────────────────────────────────────
+
+async function handleScore(
+  interaction: ChatInputCommandInteraction
+): Promise<void> {
+  if (!(await requireAdmin(interaction))) return
+
+  try {
+    await interaction.deferReply()
+
+    const threeHoursAgo = new Date(Date.now() - 3 * 60 * 60 * 1000)
+
+    const staleMatches = await prisma.match.findMany({
+      where: {
+        status: { in: ["scheduled", "live"] },
+        startTime: { lt: threeHoursAgo },
+      },
+    })
+
+    if (staleMatches.length === 0) {
+      await interaction.editReply("📭 沒有超過 3 小時仍未結束的比賽。")
+      return
+    }
+
+    const hkjcIds = staleMatches
+      .map((m) => m.hkjcMatchId)
+      .filter((id): id is string => id !== null)
+
+    let updatedCount = 0
+    let scoreCount = 0
+
+    if (hkjcIds.length > 0) {
+      const results = await fetchRunningMatches(hkjcIds)
+      const updatedIds = new Set<string>()
+
+      for (const r of results) {
+        await prisma.match.update({
+          where: { hkjcMatchId: r.hkjcMatchId },
+          data: {
+            status: "finished",
+            result: r.result ?? null,
+          },
+        })
+        updatedIds.add(r.hkjcMatchId!)
+        updatedCount++
+        if (r.result) {
+          scoreCount++
+        }
+      }
+
+      const remainingIds = staleMatches
+        .filter((m) => m.hkjcMatchId && !updatedIds.has(m.hkjcMatchId))
+        .map((m) => m.id)
+
+      if (remainingIds.length > 0) {
+        await prisma.match.updateMany({
+          where: { id: { in: remainingIds } },
+          data: { status: "finished" },
+        })
+        updatedCount += remainingIds.length
+      }
+    } else {
+      await prisma.match.updateMany({
+        where: {
+          status: { in: ["scheduled", "live"] },
+          startTime: { lt: threeHoursAgo },
+        },
+        data: { status: "finished" },
+      })
+      updatedCount = staleMatches.length
+    }
+
+    const embed = new EmbedBuilder()
+      .setColor(0x00ff00)
+      .setTitle("✅ 比賽狀態更新完成")
+      .addFields(
+        { name: "檢查比賽數", value: `${staleMatches.length}`, inline: true },
+        { name: "標記 finished", value: `${updatedCount}`, inline: true },
+        { name: "補上比分", value: `${scoreCount}`, inline: true }
+      )
+      .setTimestamp()
+
+    await interaction.editReply({ embeds: [embed] })
+  } catch (error) {
+    console.error("❌ /score 執行錯誤:", error)
+    const content = "❌ 更新比賽狀態時發生錯誤，請稍後再試。"
+    if (interaction.deferred) {
+      await interaction.editReply(content)
+    } else {
+      await interaction.reply({ content, ephemeral: true })
+    }
+  }
+}
+
+// ─── /check ────────────────────────────────────────────────────────────────
+
+async function handleCheck(
+  interaction: ChatInputCommandInteraction
+): Promise<void> {
+  if (!(await requireAdmin(interaction))) return
+
+  const subcommand = interaction.options.getSubcommand()
+
+  switch (subcommand) {
+    case "list":
+      await handleCheckList(interaction)
+      break
+    case "win":
+      await handleCheckWin(interaction)
+      break
+    case "loss":
+      await handleCheckLoss(interaction)
+      break
+  }
+}
+
+async function handleCheckList(
+  interaction: ChatInputCommandInteraction
+): Promise<void> {
+  try {
+    const pendingBets = await prisma.bet.findMany({
+      where: { status: "pending" },
+      include: {
+        match: true,
+        user: { select: { username: true } },
+      },
+      orderBy: { createdAt: "asc" },
+    })
+
+    if (pendingBets.length === 0) {
+      await interaction.reply({
+        content: "✅ 目前沒有 pending 的下注。",
+        ephemeral: true,
+      })
+      return
+    }
+
+    const lines = pendingBets.map((b) => {
+      const match = b.match
+      const scoreText = match.result || "尚無比分"
+      const matchStr = `${match.homeTeam} vs ${match.awayTeam} (${scoreText})`
+      return (
+        `**ID:** \`${b.id}\`\n` +
+        `　👤 ${b.user.username} | 🏟 ${matchStr}\n` +
+        `　🎯 玩法: ${b.betType} | 預測: ${b.prediction} | 賠率: ${b.odds.toFixed(2)} | 金額: $${b.amount.toLocaleString()}`
+      )
+    })
+
+    const embed = new EmbedBuilder()
+      .setColor(0xffaa00)
+      .setTitle(`📋 Pending 下注 (${pendingBets.length} 筆)`)
+      .setDescription(lines.join("\n\n"))
+      .setFooter({ text: "使用 /check win <id> 或 /check loss <id> 判定輸贏" })
+      .setTimestamp()
+
+    await interaction.reply({ embeds: [embed], ephemeral: true })
+  } catch (error) {
+    console.error("❌ /check list 執行錯誤:", error)
+    await interaction.reply({
+      content: "❌ 查詢下注時發生錯誤，請稍後再試。",
+      ephemeral: true,
+    })
+  }
+}
+
+async function handleCheckWin(
+  interaction: ChatInputCommandInteraction
+): Promise<void> {
+  try {
+    const betId = interaction.options.getString("bet_id", true)
+
+    const bet = await prisma.bet.findUnique({
+      where: { id: betId },
+      include: { match: true, user: true },
+    })
+
+    if (!bet) {
+      await interaction.reply({
+        content: "❌ 找不到該下注，請確認 ID 是否正確。",
+        ephemeral: true,
+      })
+      return
+    }
+
+    if (bet.status !== "pending") {
+      await interaction.reply({
+        content: `❌ 該下注狀態為 \`${bet.status}\`，無法修改。`,
+        ephemeral: true,
+      })
+      return
+    }
+
+    const profit = bet.amount * (bet.odds - 1)
+
+    await prisma.$transaction([
+      prisma.bet.update({
+        where: { id: bet.id },
+        data: { status: "won" },
+      }),
+      prisma.user.update({
+        where: { id: bet.userId },
+        data: {
+          totalWon: { increment: 1 },
+          totalProfit: { increment: profit },
+        },
+      }),
+    ])
+
+    const embed = new EmbedBuilder()
+      .setColor(0x00ff00)
+      .setTitle("✅ 已標記為獲勝")
+      .addFields(
+        { name: "用戶", value: bet.user.username, inline: true },
+        { name: "比賽", value: `${bet.match.homeTeam} vs ${bet.match.awayTeam}`, inline: true },
+        { name: "盈虧", value: `+$${profit.toFixed(2)}`, inline: true }
+      )
+      .setTimestamp()
+
+    await interaction.reply({ embeds: [embed], ephemeral: true })
+  } catch (error) {
+    console.error("❌ /check win 執行錯誤:", error)
+    await interaction.reply({
+      content: "❌ 操作時發生錯誤，請稍後再試。",
+      ephemeral: true,
+    })
+  }
+}
+
+async function handleCheckLoss(
+  interaction: ChatInputCommandInteraction
+): Promise<void> {
+  try {
+    const betId = interaction.options.getString("bet_id", true)
+
+    const bet = await prisma.bet.findUnique({
+      where: { id: betId },
+      include: { match: true, user: true },
+    })
+
+    if (!bet) {
+      await interaction.reply({
+        content: "❌ 找不到該下注，請確認 ID 是否正確。",
+        ephemeral: true,
+      })
+      return
+    }
+
+    if (bet.status !== "pending") {
+      await interaction.reply({
+        content: `❌ 該下注狀態為 \`${bet.status}\`，無法修改。`,
+        ephemeral: true,
+      })
+      return
+    }
+
+    await prisma.$transaction([
+      prisma.bet.update({
+        where: { id: bet.id },
+        data: { status: "lost" },
+      }),
+      prisma.user.update({
+        where: { id: bet.userId },
+        data: {
+          totalLost: { increment: 1 },
+          totalProfit: { decrement: bet.amount },
+        },
+      }),
+    ])
+
+    const embed = new EmbedBuilder()
+      .setColor(0xff0000)
+      .setTitle("❌ 已標記為失敗")
+      .addFields(
+        { name: "用戶", value: bet.user.username, inline: true },
+        { name: "比賽", value: `${bet.match.homeTeam} vs ${bet.match.awayTeam}`, inline: true },
+        { name: "損失", value: `-$${bet.amount.toFixed(2)}`, inline: true }
+      )
+      .setTimestamp()
+
+    await interaction.reply({ embeds: [embed], ephemeral: true })
+  } catch (error) {
+    console.error("❌ /check loss 執行錯誤:", error)
+    await interaction.reply({
+      content: "❌ 操作時發生錯誤，請稍後再試。",
+      ephemeral: true,
+    })
+  }
+}
+
+// ─── /admin bet-place ──────────────────────────────────────────────────────
+
+async function handleAdminBetPlace(
+  interaction: ChatInputCommandInteraction
+): Promise<void> {
+  try {
+    await interaction.deferReply()
+
+    const username = interaction.options.getString("username", true)
+    const matchId = interaction.options.getString("match", true)
+    const betType = interaction.options.getString("type", true)
+    const prediction = interaction.options.getString("prediction", true)
+    const amount = interaction.options.getNumber("amount", true)
+
+    const user = await prisma.user.findUnique({ where: { username } })
+    if (!user) {
+      await interaction.editReply(`❌ 找不到用戶 **${username}**。`)
+      return
+    }
+
+    const match = await prisma.match.findUnique({ where: { id: matchId } })
+    if (!match) {
+      await interaction.editReply("❌ 找不到該比賽。")
+      return
+    }
+    if (!["scheduled", "live"].includes(match.status)) {
+      await interaction.editReply("❌ 該比賽已結束，無法下注。")
+      return
+    }
+
+    let betOdds = 2.0
+    let predictionText = prediction
+    const oddsData = match.oddsData as Record<string, unknown> | null
+
+    if (betType === "HAD" && oddsData) {
+      const had = oddsData["HAD"] as
+        | { combinations?: Array<{ str: string; odds: number }> }
+        | undefined
+      if (had?.combinations) {
+        const prefix = prediction === "home" ? "H" : prediction === "away" ? "A" : "D"
+        const matchComb = had.combinations.find((c) => c.str === prefix)
+        if (matchComb) {
+          betOdds = matchComb.odds
+        }
+      }
+      predictionText =
+        prediction === "home"
+          ? match.homeTeam
+          : prediction === "away"
+            ? match.awayTeam
+            : "平手"
+    }
+
+    if (betType === "HDC" && oddsData) {
+      const hdc = oddsData["HDC"] as
+        | { combinations?: Array<{ str: string; name: string; odds: number; condition?: string }> }
+        | undefined
+      const matchComb = hdc?.combinations?.find((c) => c.str === prediction)
+      if (matchComb) {
+        betOdds = matchComb.odds
+        const teamName = prediction === "H" ? match.homeTeam : match.awayTeam
+        predictionText = matchComb.condition
+          ? `${teamName} ${matchComb.condition}`
+          : teamName
+      }
+    }
+
+    await prisma.bet.create({
+      data: {
+        userId: user.id,
+        matchId: match.id,
+        amount,
+        odds: betOdds,
+        betType,
+        prediction,
+        status: "pending",
+      },
+    })
+
+    const typeLabels: Record<string, string> = {
+      HAD: "主客和",
+      HDC: "讓球",
+    }
+
+    const embed = new EmbedBuilder()
+      .setColor(0x00aaff)
+      .setTitle("✅ 代用戶下注成功！")
+      .addFields(
+        { name: "用戶", value: user.username, inline: false },
+        { name: "比賽", value: `${match.homeTeam} vs ${match.awayTeam}`, inline: false },
+        { name: "玩法", value: typeLabels[betType] ?? betType, inline: true },
+        { name: "預測", value: predictionText, inline: true },
+        { name: "金額", value: `$${amount.toLocaleString()}`, inline: true },
+        { name: "賠率", value: betOdds.toFixed(2), inline: true }
+      )
+      .setTimestamp()
+
+    await interaction.editReply({ embeds: [embed] })
+  } catch (error) {
+    console.error("❌ /admin bet-place 執行錯誤:", error)
+    const content = "❌ 下注時發生錯誤，請稍後再試。"
+    if (interaction.deferred) {
+      await interaction.editReply(content)
+    } else {
+      await interaction.reply({ content, ephemeral: true })
+    }
+  }
+}
+
+// ─── /admin bet-other ──────────────────────────────────────────────────────
+
+async function handleAdminBetOther(
+  interaction: ChatInputCommandInteraction
+): Promise<void> {
+  try {
+    await interaction.deferReply()
+
+    const username = interaction.options.getString("username", true)
+    const matchId = interaction.options.getString("match", true)
+    const manualOdds = interaction.options.getNumber("odds", true)
+    const amount = interaction.options.getNumber("amount", true)
+    const prediction = interaction.options.getString("prediction") ?? ""
+
+    const user = await prisma.user.findUnique({ where: { username } })
+    if (!user) {
+      await interaction.editReply(`❌ 找不到用戶 **${username}**。`)
+      return
+    }
+
+    const match = await prisma.match.findUnique({ where: { id: matchId } })
+    if (!match) {
+      await interaction.editReply("❌ 找不到該比賽。")
+      return
+    }
+    if (!["scheduled", "live"].includes(match.status)) {
+      await interaction.editReply("❌ 該比賽已結束，無法下注。")
+      return
+    }
+
+    const predictionText = prediction || "手動下注"
+
+    await prisma.bet.create({
+      data: {
+        userId: user.id,
+        matchId: match.id,
+        amount,
+        odds: manualOdds,
+        betType: "OTHER",
+        prediction,
+        status: "pending",
+      },
+    })
+
+    const embed = new EmbedBuilder()
+      .setColor(0x00aaff)
+      .setTitle("✅ 代用戶下注成功！")
+      .addFields(
+        { name: "用戶", value: user.username, inline: false },
+        { name: "比賽", value: `${match.homeTeam} vs ${match.awayTeam}`, inline: false },
+        { name: "玩法", value: "其他（手動賠率）", inline: true },
+        { name: "預測", value: predictionText, inline: true },
+        { name: "金額", value: `$${amount.toLocaleString()}`, inline: true },
+        { name: "賠率", value: manualOdds.toFixed(2), inline: true }
+      )
+      .setTimestamp()
+
+    await interaction.editReply({ embeds: [embed] })
+  } catch (error) {
+    console.error("❌ /admin bet-other 執行錯誤:", error)
+    const content = "❌ 下注時發生錯誤，請稍後再試。"
+    if (interaction.deferred) {
+      await interaction.editReply(content)
+    } else {
+      await interaction.reply({ content, ephemeral: true })
+    }
+  }
 }

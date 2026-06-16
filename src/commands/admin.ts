@@ -52,3 +52,85 @@ export const adminCommand = new SlashCommandBuilder()
         opt.setName("username").setDescription("帳號名稱").setRequired(true)
       )
   )
+  .addSubcommand((sub) =>
+    sub
+      .setName("bet-place")
+      .setDescription("代用戶下注（主客和 / 讓球）")
+      .addStringOption((opt) =>
+        opt
+          .setName("username")
+          .setDescription("選擇用戶")
+          .setRequired(true)
+          .setAutocomplete(true)
+      )
+      .addStringOption((opt) =>
+        opt
+          .setName("match")
+          .setDescription("選擇比賽")
+          .setRequired(true)
+          .setAutocomplete(true)
+      )
+      .addStringOption((opt) =>
+        opt
+          .setName("type")
+          .setDescription("玩法類型")
+          .setRequired(true)
+          .addChoices(
+            { name: "主客和", value: "HAD" },
+            { name: "讓球", value: "HDC" }
+          )
+      )
+      .addStringOption((opt) =>
+        opt
+          .setName("prediction")
+          .setDescription("預測選項")
+          .setRequired(true)
+          .setAutocomplete(true)
+      )
+      .addNumberOption((opt) =>
+        opt
+          .setName("amount")
+          .setDescription("下注金額（用於計算盈虧）")
+          .setRequired(true)
+          .setMinValue(1)
+      )
+  )
+  .addSubcommand((sub) =>
+    sub
+      .setName("bet-other")
+      .setDescription("代用戶下注（手動輸入賠率）")
+      .addStringOption((opt) =>
+        opt
+          .setName("username")
+          .setDescription("選擇用戶")
+          .setRequired(true)
+          .setAutocomplete(true)
+      )
+      .addStringOption((opt) =>
+        opt
+          .setName("match")
+          .setDescription("選擇比賽")
+          .setRequired(true)
+          .setAutocomplete(true)
+      )
+      .addNumberOption((opt) =>
+        opt
+          .setName("odds")
+          .setDescription("手動輸入賠率（如 2.50）")
+          .setRequired(true)
+          .setMinValue(0.01)
+      )
+      .addNumberOption((opt) =>
+        opt
+          .setName("amount")
+          .setDescription("下注金額（用於計算盈虧）")
+          .setRequired(true)
+          .setMinValue(1)
+      )
+      .addStringOption((opt) =>
+        opt
+          .setName("prediction")
+          .setDescription("自訂預測文字（選填，如「巴西勝」）")
+          .setRequired(false)
+      )
+  )
