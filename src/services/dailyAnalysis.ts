@@ -193,7 +193,7 @@ function buildMatchForAnalysis(match: Match) {
 
 function buildAnalysisEmbed(match: Match, analysis: string): EmbedBuilder {
   const time = match.startTime.toLocaleString("zh-TW", {
-    timeZone: "Asia/Taipei",
+    timeZone: "Asia/Hong_Kong",
     year: "numeric",
     month: "2-digit",
     day: "2-digit",

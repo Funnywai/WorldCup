@@ -1138,7 +1138,7 @@ async function handleFetch(
         }
       }
       const time = m.startTime.toLocaleString("zh-TW", {
-        timeZone: "Asia/Taipei",
+        timeZone: "Asia/Hong_Kong",
         month: "2-digit",
         day: "2-digit",
         hour: "2-digit",

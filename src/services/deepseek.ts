@@ -27,7 +27,7 @@ export async function generateMatchAnalysis(
 
   const matchList = matches
     .map((m, i) => {
-      let line = `${i + 1}. ${m.homeTeam} vs ${m.awayTeam}（${m.startTime.toLocaleString("zh-TW", { timeZone: "Asia/Taipei" })}）`
+      let line = `${i + 1}. ${m.homeTeam} vs ${m.awayTeam}（${m.startTime.toLocaleString("zh-TW", { timeZone: "Asia/Hong_Kong" })}）`
       if (m.oddsSummary) {
         line += `\n   賠率參考：${m.oddsSummary}`
       }
@@ -35,20 +35,44 @@ export async function generateMatchAnalysis(
     })
     .join("\n")
 
-  const systemPrompt = `你是一位專業的足球分析師，擅長 2026 世界盃賽事分析與博弈預測。
-請根據提供的今日賽程、歷史對戰紀錄與香港賽馬會（HKJC）賠率，生成一份專業、數據導向的分析報告。
-報告必須使用**繁體中文**撰寫。
+  const isSingle = matches.length === 1
 
-# 輸出格式要求
+  const systemPrompt = isSingle
+    ? `你是一位專業的足球分析師，擅長 2026 世界盃賽事分析與博弈預測。
+請根據提供的賽程、歷史對戰紀錄與香港賽馬會（HKJC）賠率，生成一份專業分析報告。
+報告必須使用**繁體中文**撰寫，嚴格遵循以下格式：
+
+## 比賽分析：[主隊] vs [客隊]
+
+### 1. 對戰分析
+- **近期狀態**：兩隊近 5 場表現簡述
+- **歷史對戰**：過往交鋒紀錄（若無則寫「兩隊無正式交鋒紀錄」）
+- **關鍵球員**：各列出 1-2 名影響戰局的關鍵球員
+
+### 2. 賠率解讀
+- **標準盤（HAD）**：列出主勝/和局/客勝賠率，分析市場信號
+- **讓球盤（HDC）**：列出主要讓球盤口與賠率，分析莊家意圖
+- **盤口訊號**：總結莊家對比賽走向的判斷
+
+### 3. 投注建議
+- **穩健推薦**：風險最低的投注方向 + 賠率 + 簡述理由
+- **進取推薦**：回報較高的投注方向 + 賠率 + 簡述理由（可選）
+- **風險提示**：應避免的投注方向
+
+### 4. 信心指數
+使用 ★ 表示（1-5 星），對應上述每項推薦`
+    : `你是一位專業的足球分析師，擅長 2026 世界盃賽事分析與博弈預測。
+請根據提供的賽程、歷史對戰紀錄與香港賽馬會（HKJC）賠率，生成一份專業分析報告。
+報告必須使用**繁體中文**撰寫。
 請對每場比賽提供：
 1. **對戰分析**：兩隊近期狀態、歷史對戰、關鍵球員
-2. **賠率解讀**：根據提供的 HKJC 賠率，分析莊家盤口走勢與市場信號
-3. **投注建議**：推薦下注方向（主勝/客勝/平手/讓球/大細），並簡述理由
-4. **信心指數**：以 1-5 星表示對該推薦的信心程度
+2. **賠率解讀**：分析莊家盤口走勢與市場信號
+3. **投注建議**：推薦下注方向並簡述理由
+4. **信心指數**：以 1-5 星表示
+最後附上總體推薦摘要。`
 
-最後附上今日總體推薦摘要。`
-
-  let userPrompt = `今日賽程如下（所有時間為台灣時間）：\n\n${matchList}`
+  const prefix = isSingle ? "請分析以下比賽" : "今日賽程如下"
+  let userPrompt = `${prefix}（所有時間為香港時間）：\n\n${matchList}`
   if (historicalContext) {
     userPrompt += `\n\n--- 歷史數據參考 ---\n${historicalContext}`
   }
