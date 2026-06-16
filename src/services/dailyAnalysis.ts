@@ -334,6 +334,9 @@ export interface AnalysisLogResult {
   createdAt: Date
 }
 
+const HK_TIME = () =>
+  new Date().toLocaleString("zh-HK", { timeZone: "Asia/Hong_Kong", hour12: false })
+
 export function startMatchFetchCron(): void {
   const CRON_FETCH = process.env.CRON_FETCH || "*/15 * * * *"
   cron.schedule(CRON_FETCH, async () => {
@@ -343,20 +346,20 @@ export function startMatchFetchCron(): void {
       tomorrowDate.setDate(tomorrowDate.getDate() + 1)
       const tomorrowStr = formatDate(tomorrowDate)
 
-      console.log(`📡 [Cron Fetch] 正在背景同步賽程 (${todayStr})...`)
+      console.log(`[${HK_TIME()}] 📡 [Cron Fetch] 正在背景同步賽程 (${todayStr})...`)
       let matches = await fetchWorldCupMatches(todayStr, todayStr)
       if (matches.length === 0) {
-        console.log(`📡 [Cron Fetch] 今日無賽事，嘗試撈取明日 (${tomorrowStr})...`)
+        console.log(`[${HK_TIME()}] 📡 [Cron Fetch] 今日無賽事，嘗試撈取明日 (${tomorrowStr})...`)
         matches = await fetchWorldCupMatches(tomorrowStr, tomorrowStr)
       }
       if (matches.length > 0) {
         await upsertMatchesToDb(matches)
-        console.log(`✅ [Cron Fetch] 已更新 ${matches.length} 場比賽賠率`)
+        console.log(`[${HK_TIME()}] ✅ [Cron Fetch] 已更新 ${matches.length} 場比賽賠率`)
       } else {
-        console.log(`📭 [Cron Fetch] 暫無世界盃賽事`)
+        console.log(`[${HK_TIME()}] 📭 [Cron Fetch] 暫無世界盃賽事`)
       }
     } catch (error) {
-      console.error("❌ [Cron Fetch] 背景同步失敗:", error)
+      console.error(`[${HK_TIME()}] ❌ [Cron Fetch] 背景同步失敗:`, error)
     }
   }, { timezone: "Asia/Hong_Kong" })
 
