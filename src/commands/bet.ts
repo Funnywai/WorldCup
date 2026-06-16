@@ -21,7 +21,11 @@ export const betCommand = new SlashCommandBuilder()
           .setRequired(true)
           .addChoices(
             { name: "主客和", value: "HAD" },
-            { name: "讓球", value: "HDC" }
+            { name: "讓球", value: "HDC" },
+            { name: "讓球主客和", value: "HHA" },
+            { name: "入球大細", value: "HIL" },
+            { name: "角球讓球", value: "CHD" },
+            { name: "角球大細", value: "CHL" }
           )
       )
       .addStringOption((opt) =>

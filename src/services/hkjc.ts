@@ -1,4 +1,4 @@
-import { FootballAPI, FootballMatch, FootballPool } from "hkjc-api"
+import { FootballAPI, FootballMatch, FootballPool, HistoricFootballMatch, HistoricFootballMatchDetails } from "hkjc-api"
 
 const api = new FootballAPI()
 
@@ -11,6 +11,9 @@ export interface HkjcMatchData {
   status: "scheduled" | "live" | "finished"
   result?: string
   odds: Record<string, HkjcOddsPool>
+  /** 即時賽事才有的角球數據（用於結算 CHD/CHL） */
+  homeCorner?: number
+  awayCorner?: number
 }
 
 export interface HkjcOddsPool {
@@ -36,28 +39,34 @@ export async function fetchWorldCupMatches(
   startDate?: string,
   endDate?: string
 ): Promise<HkjcMatchData[]> {
-  const matches = await api.getAllFootballMatches({
-    oddsTypes: ["HAD", "HDC", "HIL", "CRS"],
-  })
+  const [batch1, batch2] = await Promise.all([
+    api.getAllFootballMatches({ oddsTypes: ["HAD", "HDC", "HIL", "CRS"] }),
+    api.getAllFootballMatches({ oddsTypes: ["HHA", "CHD", "CHL"] }),
+  ])
 
-  let worldCupMatches = matches.filter((m) => {
+  const pass = (m: FootballMatch) => {
     const tNameCn = m.tournament?.name_ch?.toLowerCase() || ""
     const tNameEn = m.tournament?.name_en?.toLowerCase() || ""
     const tName = tNameCn + " " + tNameEn
-    return tName.includes("世盃") || tName.includes("wc finals") || tName.includes("world cup")
-  })
-
-  if (startDate) {
-    worldCupMatches = worldCupMatches.filter((m) => {
-      const datePart = (m.matchDate || "").split("+")[0]
-      if (!datePart) return false
-      if (datePart < startDate) return false
-      if (endDate && datePart > endDate) return false
-      return true
-    })
+    if (!(tName.includes("世盃") || tName.includes("wc finals") || tName.includes("world cup"))) return false
+    if (!startDate) return true
+    const dp = (m.matchDate || "").split("+")[0]
+    return !!dp && dp >= startDate && (!endDate || dp <= endDate)
   }
 
-  return worldCupMatches.map(transformMatch)
+  const transformed1 = batch1.filter(pass).map(transformMatch)
+  const transformed2 = batch2.filter(pass).map(transformMatch)
+
+  const extra = new Map<string, Record<string, HkjcOddsPool>>()
+  for (const m of transformed2) {
+    extra.set(m.hkjcMatchId, m.odds)
+  }
+  for (const match of transformed1) {
+    const odds = extra.get(match.hkjcMatchId)
+    if (odds) Object.assign(match.odds, odds)
+  }
+
+  return transformed1
 }
 
 /**
@@ -128,5 +137,50 @@ function transformMatch(match: FootballMatch): HkjcMatchData {
     status: statusMap[match.status] || "live",
     result: score,
     odds,
+    homeCorner: match.runningResult?.homeCorner ?? undefined,
+    awayCorner: match.runningResult?.awayCorner ?? undefined,
   }
+}
+
+/**
+ * 從 HKJC 歷史結果 API 獲取已完賽世界盃賽事比數。
+ * 用於賽後自動結算。
+ */
+export async function fetchHistoricMatchResults(
+  startDate: string,
+  endDate: string
+): Promise<{
+  hkjcMatchId: string
+  homeScore: number
+  awayScore: number
+  ttlCorner: number
+}[]> {
+  const matches = await api.getHistoricFootballMatches({ startDate, endDate })
+
+  const worldCupMatches = matches.filter((m) => {
+    const t = (m.tournament?.name_ch || "").toLowerCase()
+    return t.includes("世盃") || t.includes("world cup")
+  })
+
+  return worldCupMatches.flatMap((m) => {
+    const primaryResult = m.results?.[0]
+    if (!primaryResult) return []
+
+    return [{
+      hkjcMatchId: m.id,
+      homeScore: primaryResult.homeResult,
+      awayScore: primaryResult.awayResult,
+      ttlCorner: primaryResult.ttlCornerResult,
+    }]
+  })
+}
+
+/**
+ * 從 HKJC 獲取單場賽事各玩法的派彩結果（winOrd）。
+ * 用於驗證結算或取得角球細項數據。
+ */
+export async function fetchMatchResultDetails(
+  matchId: string
+): Promise<HistoricFootballMatchDetails | null> {
+  return api.getHistoricFootballMatchDetails(matchId)
 }

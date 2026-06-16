@@ -182,6 +182,60 @@ function buildMatchForAnalysis(match: Match) {
         oddsSummary += (oddsSummary ? " | " : "") + "讓球: " + hdcSummary
       }
     }
+
+    const hha = oddsData["HHA"] as
+      | { combinations?: Array<{ str: string; name: string; odds: number; status?: string; condition?: string }> }
+      | undefined
+    const hhaCombos = hha?.combinations
+    if (hhaCombos) {
+      const mainConds = [...new Set(hhaCombos.filter(c => c.status === "AVAILABLE" && c.condition).map(c => c.condition!))].slice(0, 1)
+      const hhaSummary = mainConds.map(cond => {
+        const parts = hhaCombos.filter(c => c.condition === cond).map(c => `${c.name}: ${c.odds}`).join(" / ")
+        return `(${cond.replace(/\.0$/, "")}) ${parts}`
+      }).join(" | ")
+      if (hhaSummary) {
+        oddsSummary += (oddsSummary ? " | " : "") + "讓球主客和: " + hhaSummary
+      }
+    }
+
+    const hil = oddsData["HIL"] as
+      | { combinations?: Array<{ str: string; name: string; odds: number; status?: string; condition?: string }> }
+      | undefined
+    const hilCombos = hil?.combinations
+    if (hilCombos) {
+      const main = hilCombos.find(c => c.status === "AVAILABLE" && c.condition)
+      if (main) {
+        const h = hilCombos.find(c => c.condition === main.condition && c.str === "H")
+        const l = hilCombos.find(c => c.condition === main.condition && c.str === "L")
+        oddsSummary += (oddsSummary ? " | " : "") + `入球大細 (${main.condition}): 大 ${h?.odds ?? "—"} / 細 ${l?.odds ?? "—"}`
+      }
+    }
+
+    const chd = oddsData["CHD"] as
+      | { combinations?: Array<{ str: string; name: string; odds: number; status?: string; condition?: string }> }
+      | undefined
+    const chdCombos = chd?.combinations
+    if (chdCombos) {
+      const main = chdCombos.find(c => c.status === "AVAILABLE" && c.condition)
+      if (main) {
+        const h = chdCombos.find(c => c.condition === main.condition && c.str === "H")
+        const a = chdCombos.find(c => c.condition === main.condition && c.str === "A")
+        oddsSummary += (oddsSummary ? " | " : "") + `角球讓球 (${main.condition}): 主 ${h?.odds ?? "—"} / 客 ${a?.odds ?? "—"}`
+      }
+    }
+
+    const chl = oddsData["CHL"] as
+      | { combinations?: Array<{ str: string; name: string; odds: number; status?: string; condition?: string }> }
+      | undefined
+    const chlCombos = chl?.combinations
+    if (chlCombos) {
+      const main = chlCombos.find(c => c.status === "AVAILABLE" && c.condition)
+      if (main) {
+        const h = chlCombos.find(c => c.condition === main.condition && c.str === "H")
+        const l = chlCombos.find(c => c.condition === main.condition && c.str === "L")
+        oddsSummary += (oddsSummary ? " | " : "") + `角球大細 (${main.condition}): 大 ${h?.odds ?? "—"} / 細 ${l?.odds ?? "—"}`
+      }
+    }
   }
   return {
     homeTeam: match.homeTeam,

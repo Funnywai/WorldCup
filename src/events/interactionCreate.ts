@@ -12,6 +12,7 @@ import {
 import prisma from "../db/prisma"
 import { requireAuth, requireAdmin, hashPassword, verifyPassword } from "../services/auth"
 import { fetchWorldCupMatches, fetchRunningMatches } from "../services/hkjc"
+import { settleMatchBets } from "../services/settlement"
 import { upsertMatchesToDb, analyzeAndPost, analyzeSingleMatch, formatDate } from "../services/dailyAnalysis"
 
 function flipPart(part: string): string {
@@ -183,15 +184,105 @@ async function handleAutocomplete(
           .filter((c) => c.status === "AVAILABLE")
           .map((c) => {
             const teamName = c.str === "H" ? match.homeTeam : match.awayTeam
+            const rawCond = c.condition ?? ""
             const displayCond = c.str === "H" ? c.condition : (c.condition ? flipCondition(c.condition) : undefined)
             const suffix = displayCond ? ` ${displayCond}` : ""
-            return {
-              name: `${teamName}${suffix} — ${c.odds.toFixed(2)}`,
-              value: c.str,
-            }
+            const value = rawCond ? `${c.str}|${rawCond}` : c.str
+            return { name: `${teamName}${suffix} — ${c.odds.toFixed(2)}`, value }
           })
 
         await interaction.respond(choices)
+      }
+
+      if (betType === "HHA") {
+        const matchId = interaction.options.getString("match")
+        if (!matchId) { await interaction.respond([]); return }
+        const match = await prisma.match.findUnique({ where: { id: matchId } })
+        if (!match) { await interaction.respond([]); return }
+        const oddsData = match.oddsData as Record<string, unknown> | null
+        const hha = oddsData?.["HHA"] as
+          | { combinations?: Array<{ str: string; name: string; odds: number; status: string; condition?: string }> }
+          | undefined
+        if (!hha?.combinations) { await interaction.respond([]); return }
+        const haCombos = hha.combinations
+        const conds = [...new Set(haCombos.filter(c => c.status === "AVAILABLE" && c.condition).map(c => c.condition!))]
+        const choices: { name: string; value: string }[] = []
+        conds.slice(0, 3).forEach(cond => {
+          const h = haCombos.find(c => c.condition === cond && c.str === "H")
+          const d = haCombos.find(c => c.condition === cond && c.str === "D")
+          const a = haCombos.find(c => c.condition === cond && c.str === "A")
+          if (h) choices.push({ name: `${match.homeTeam} ${cond} (${h.odds})`, value: `H|${cond}` })
+          if (d) choices.push({ name: `和局 ${cond} (${d.odds})`, value: `D|${cond}` })
+          if (a) choices.push({ name: `${match.awayTeam} ${cond} (${a.odds})`, value: `A|${cond}` })
+        })
+        await interaction.respond(choices.slice(0, 25))
+      }
+
+      if (betType === "HIL") {
+        const matchId = interaction.options.getString("match")
+        if (!matchId) { await interaction.respond([]); return }
+        const match = await prisma.match.findUnique({ where: { id: matchId } })
+        if (!match) { await interaction.respond([]); return }
+        const oddsData = match.oddsData as Record<string, unknown> | null
+        const hil = oddsData?.["HIL"] as
+          | { combinations?: Array<{ str: string; name: string; odds: number; status: string; condition?: string }> }
+          | undefined
+        if (!hil?.combinations) { await interaction.respond([]); return }
+        const hilCombos = hil.combinations
+        const conds = [...new Set(hilCombos.filter(c => c.status === "AVAILABLE" && c.condition).map(c => c.condition!))]
+        const choices: { name: string; value: string }[] = []
+        conds.slice(0, 6).forEach(cond => {
+          const h = hilCombos.find(c => c.condition === cond && c.str === "H")
+          const l = hilCombos.find(c => c.condition === cond && c.str === "L")
+          if (h) choices.push({ name: `大 ${cond} (${h.odds})`, value: `H|${cond}` })
+          if (l) choices.push({ name: `細 ${cond} (${l.odds})`, value: `L|${cond}` })
+        })
+        await interaction.respond(choices.slice(0, 25))
+      }
+
+      if (betType === "CHD") {
+        const matchId = interaction.options.getString("match")
+        if (!matchId) { await interaction.respond([]); return }
+        const match = await prisma.match.findUnique({ where: { id: matchId } })
+        if (!match) { await interaction.respond([]); return }
+        const oddsData = match.oddsData as Record<string, unknown> | null
+        const chd = oddsData?.["CHD"] as
+          | { combinations?: Array<{ str: string; name: string; odds: number; status: string; condition?: string }> }
+          | undefined
+        if (!chd?.combinations) { await interaction.respond([]); return }
+        const choices = chd.combinations
+          .filter(c => c.status === "AVAILABLE")
+          .map(c => {
+            const teamName = c.str === "H" ? match.homeTeam : match.awayTeam
+            const rawCond = c.condition ?? ""
+            const displayCond = c.str === "H" ? c.condition : (c.condition ? flipCondition(c.condition) : undefined)
+            const suffix = displayCond ? ` ${displayCond}` : ""
+            const value = rawCond ? `${c.str}|${rawCond}` : c.str
+            return { name: `${teamName}${suffix} — ${c.odds.toFixed(2)}`, value }
+          })
+        await interaction.respond(choices.slice(0, 25))
+      }
+
+      if (betType === "CHL") {
+        const matchId = interaction.options.getString("match")
+        if (!matchId) { await interaction.respond([]); return }
+        const match = await prisma.match.findUnique({ where: { id: matchId } })
+        if (!match) { await interaction.respond([]); return }
+        const oddsData = match.oddsData as Record<string, unknown> | null
+        const chl = oddsData?.["CHL"] as
+          | { combinations?: Array<{ str: string; name: string; odds: number; status: string; condition?: string }> }
+          | undefined
+        if (!chl?.combinations) { await interaction.respond([]); return }
+        const chlCombos = chl.combinations
+        const conds = [...new Set(chlCombos.filter(c => c.status === "AVAILABLE" && c.condition).map(c => c.condition!))]
+        const choices: { name: string; value: string }[] = []
+        conds.slice(0, 6).forEach(cond => {
+          const h = chlCombos.find(c => c.condition === cond && c.str === "H")
+          const l = chlCombos.find(c => c.condition === cond && c.str === "L")
+          if (h) choices.push({ name: `角球大 ${cond} (${h.odds})`, value: `H|${cond}` })
+          if (l) choices.push({ name: `角球細 ${cond} (${l.odds})`, value: `L|${cond}` })
+        })
+        await interaction.respond(choices.slice(0, 25))
       }
     }
   }
@@ -308,14 +399,84 @@ async function handleAutocomplete(
             .filter((c) => c.status === "AVAILABLE")
             .map((c) => {
               const teamName = c.str === "H" ? match.homeTeam : match.awayTeam
+              const rawCond = c.condition ?? ""
               const displayCond = c.str === "H" ? c.condition : (c.condition ? flipCondition(c.condition) : undefined)
               const suffix = displayCond ? ` ${displayCond}` : ""
-              return {
-                name: `${teamName}${suffix} — ${c.odds.toFixed(2)}`,
-                value: c.str,
-              }
+              const value = rawCond ? `${c.str}|${rawCond}` : c.str
+              return { name: `${teamName}${suffix} — ${c.odds.toFixed(2)}`, value }
             })
         )
+      }
+
+      if (betType === "HHA") {
+        const hha = oddsData?.["HHA"] as
+          | { combinations?: Array<{ str: string; name: string; odds: number; status: string; condition?: string }> }
+          | undefined
+        if (!hha?.combinations) { await interaction.respond([]); return }
+        const haCombos = hha.combinations
+        const conds = [...new Set(haCombos.filter(c => c.status === "AVAILABLE" && c.condition).map(c => c.condition!))]
+        const choices: { name: string; value: string }[] = []
+        conds.slice(0, 3).forEach(cond => {
+          const h = haCombos.find(c => c.condition === cond && c.str === "H")
+          const d = haCombos.find(c => c.condition === cond && c.str === "D")
+          const a = haCombos.find(c => c.condition === cond && c.str === "A")
+          if (h) choices.push({ name: `${match.homeTeam} ${cond} (${h.odds})`, value: `H|${cond}` })
+          if (d) choices.push({ name: `和局 ${cond} (${d.odds})`, value: `D|${cond}` })
+          if (a) choices.push({ name: `${match.awayTeam} ${cond} (${a.odds})`, value: `A|${cond}` })
+        })
+        await interaction.respond(choices.slice(0, 25))
+      }
+
+      if (betType === "HIL") {
+        const hil = oddsData?.["HIL"] as
+          | { combinations?: Array<{ str: string; name: string; odds: number; status: string; condition?: string }> }
+          | undefined
+        if (!hil?.combinations) { await interaction.respond([]); return }
+        const hilCombos = hil.combinations
+        const conds = [...new Set(hilCombos.filter(c => c.status === "AVAILABLE" && c.condition).map(c => c.condition!))]
+        const choices: { name: string; value: string }[] = []
+        conds.slice(0, 6).forEach(cond => {
+          const h = hilCombos.find(c => c.condition === cond && c.str === "H")
+          const l = hilCombos.find(c => c.condition === cond && c.str === "L")
+          if (h) choices.push({ name: `大 ${cond} (${h.odds})`, value: `H|${cond}` })
+          if (l) choices.push({ name: `細 ${cond} (${l.odds})`, value: `L|${cond}` })
+        })
+        await interaction.respond(choices.slice(0, 25))
+      }
+
+      if (betType === "CHD") {
+        const chd = oddsData?.["CHD"] as
+          | { combinations?: Array<{ str: string; name: string; odds: number; status: string; condition?: string }> }
+          | undefined
+        if (!chd?.combinations) { await interaction.respond([]); return }
+        const choices = chd.combinations
+          .filter(c => c.status === "AVAILABLE")
+          .map(c => {
+            const teamName = c.str === "H" ? match.homeTeam : match.awayTeam
+            const rawCond = c.condition ?? ""
+            const displayCond = c.str === "H" ? c.condition : (c.condition ? flipCondition(c.condition) : undefined)
+            const suffix = displayCond ? ` ${displayCond}` : ""
+            const value = rawCond ? `${c.str}|${rawCond}` : c.str
+            return { name: `${teamName}${suffix} — ${c.odds.toFixed(2)}`, value }
+          })
+        await interaction.respond(choices.slice(0, 25))
+      }
+
+      if (betType === "CHL") {
+        const chl = oddsData?.["CHL"] as
+          | { combinations?: Array<{ str: string; name: string; odds: number; status: string; condition?: string }> }
+          | undefined
+        if (!chl?.combinations) { await interaction.respond([]); return }
+        const chlCombos = chl.combinations
+        const conds = [...new Set(chlCombos.filter(c => c.status === "AVAILABLE" && c.condition).map(c => c.condition!))]
+        const choices: { name: string; value: string }[] = []
+        conds.slice(0, 6).forEach(cond => {
+          const h = chlCombos.find(c => c.condition === cond && c.str === "H")
+          const l = chlCombos.find(c => c.condition === cond && c.str === "L")
+          if (h) choices.push({ name: `角球大 ${cond} (${h.odds})`, value: `H|${cond}` })
+          if (l) choices.push({ name: `角球細 ${cond} (${l.odds})`, value: `L|${cond}` })
+        })
+        await interaction.respond(choices.slice(0, 25))
       }
     }
   }
@@ -449,6 +610,12 @@ async function handleAdmin(
         break
       case "delete":
         await handleAdminDelete(interaction)
+        break
+      case "bet-place":
+        await handleAdminBetPlace(interaction)
+        break
+      case "bet-other":
+        await handleAdminBetOther(interaction)
         break
     }
   } catch (error) {
@@ -781,19 +948,84 @@ async function handleBetPlace(
       const hdc = oddsData["HDC"] as
         | { combinations?: Array<{ str: string; name: string; odds: number; condition?: string }> }
         | undefined
-      const matchComb = hdc?.combinations?.find((c) => c.str === prediction)
+      const parts = prediction.split("|")
+      const matchComb = hdc?.combinations?.find(
+        (c) => c.str === parts[0] && (!parts[1] || c.condition === parts[1])
+      )
       if (matchComb) {
         betOdds = matchComb.odds
-        const teamName = prediction === "H" ? match.homeTeam : match.awayTeam
+        const teamName = parts[0] === "H" ? match.homeTeam : match.awayTeam
         predictionText = matchComb.condition
           ? `${teamName} ${matchComb.condition}`
           : teamName
       }
     }
 
+    if (betType === "HHA" && oddsData) {
+      const hha = oddsData["HHA"] as
+        | { combinations?: Array<{ str: string; name: string; odds: number; condition?: string }> }
+        | undefined
+      const parts = prediction.split("|")
+      const matchComb = hha?.combinations?.find((c) => c.str === parts[0] && c.condition === parts[1])
+      if (matchComb) {
+        betOdds = matchComb.odds
+        const condLabel = matchComb.condition ?? ""
+        if (parts[0] === "H") predictionText = `${match.homeTeam} ${condLabel}`
+        else if (parts[0] === "D") predictionText = `和局 ${condLabel}`
+        else if (parts[0] === "A") predictionText = `${match.awayTeam} ${condLabel}`
+      }
+    }
+
+    if (betType === "HIL" && oddsData) {
+      const hil = oddsData["HIL"] as
+        | { combinations?: Array<{ str: string; name: string; odds: number; condition?: string }> }
+        | undefined
+      const parts = prediction.split("|")
+      const matchComb = hil?.combinations?.find((c) => c.str === parts[0] && c.condition === parts[1])
+      if (matchComb) {
+        betOdds = matchComb.odds
+        if (parts[0] === "H") predictionText = `大 ${parts[1]}`
+        else if (parts[0] === "L") predictionText = `細 ${parts[1]}`
+      }
+    }
+
+    if (betType === "CHD" && oddsData) {
+      const chd = oddsData["CHD"] as
+        | { combinations?: Array<{ str: string; name: string; odds: number; condition?: string }> }
+        | undefined
+      const parts = prediction.split("|")
+      const matchComb = chd?.combinations?.find(
+        (c) => c.str === parts[0] && (!parts[1] || c.condition === parts[1])
+      )
+      if (matchComb) {
+        betOdds = matchComb.odds
+        const teamName = parts[0] === "H" ? match.homeTeam : match.awayTeam
+        predictionText = matchComb.condition
+          ? `${teamName} ${matchComb.condition}`
+          : teamName
+      }
+    }
+
+    if (betType === "CHL" && oddsData) {
+      const chl = oddsData["CHL"] as
+        | { combinations?: Array<{ str: string; name: string; odds: number; condition?: string }> }
+        | undefined
+      const parts = prediction.split("|")
+      const matchComb = chl?.combinations?.find((c) => c.str === parts[0] && c.condition === parts[1])
+      if (matchComb) {
+        betOdds = matchComb.odds
+        if (parts[0] === "H") predictionText = `角球大 ${parts[1]}`
+        else if (parts[0] === "L") predictionText = `角球細 ${parts[1]}`
+      }
+    }
+
     const typeLabels: Record<string, string> = {
       HAD: "主客和",
       HDC: "讓球",
+      HHA: "讓球主客和",
+      HIL: "入球大細",
+      CHD: "角球讓球",
+      CHL: "角球大細",
     }
 
     // user is guaranteed non-null here
@@ -960,6 +1192,10 @@ async function handleBetHistory(
     const typeLabels: Record<string, string> = {
       HAD: "主客和",
       HDC: "讓球",
+      HHA: "讓球主客和",
+      HIL: "入球大細",
+      CHD: "角球讓球",
+      CHL: "角球大細",
       OTHER: "其他",
     }
 
@@ -1118,24 +1354,6 @@ async function handleFetch(
             `客 ${away?.odds.toFixed(2) ?? "—"}`
           )
         }
-
-        const hdc = oddsData["HDC"] as
-          | { combinations?: Array<{ str: string; odds: number; status: string; condition?: string }> }
-          | undefined
-        const hdcCombos = hdc?.combinations
-        if (hdcCombos) {
-          const conds = [...new Set(hdcCombos.filter(c => c.status === "AVAILABLE" && c.condition).map(c => c.condition!))]
-          const condsShown = conds.slice(0, 2)
-          const hdcParts = condsShown.map((cond) => {
-            const h = hdcCombos.find((c) => c.condition === cond && c.str === "H")
-            const a = hdcCombos.find((c) => c.condition === cond && c.str === "A")
-            return `主 ${cond} (${h?.odds.toFixed(2) ?? "—"}) | 客 ${flipCondition(cond)} (${a?.odds.toFixed(2) ?? "—"})`
-          })
-          const hdcSuffix = conds.length > 2 ? ` ...共 ${conds.length} 個盤口` : ""
-          if (hdcParts.length > 0) {
-            oddsLines.push(`⚖️ ${hdcParts.join(" | ")}${hdcSuffix}`)
-          }
-        }
       }
       const time = m.startTime.toLocaleString("zh-TW", {
         timeZone: "Asia/Hong_Kong",
@@ -1260,15 +1478,84 @@ function buildMatchEmbed(matches: Awaited<ReturnType<typeof queryUpcomingMatches
         if (hdcParts.length > 0) {
           oddsLines.push(`⚖️ ${hdcParts.join(" | ")}${hdcSuffix}`)
         }
+        }
+
+        const hha = oddsData["HHA"] as
+          | { combinations?: Array<{ str: string; odds: number; status: string; condition?: string }> }
+          | undefined
+        const hhaCombos = hha?.combinations
+        if (hhaCombos) {
+          const conds = [...new Set(hhaCombos.filter(c => c.status === "AVAILABLE" && c.condition).map(c => c.condition!))]
+          const condsShown = conds.slice(0, 2)
+          const hhaParts = condsShown.map((cond) => {
+            const h = hhaCombos.find((c) => c.condition === cond && c.str === "H")
+            const d = hhaCombos.find((c) => c.condition === cond && c.str === "D")
+            const a = hhaCombos.find((c) => c.condition === cond && c.str === "A")
+            return `主 ${cond} (${h?.odds.toFixed(2) ?? "—"}) | 和 (${d?.odds.toFixed(2) ?? "—"}) | 客 ${flipCondition(cond)} (${a?.odds.toFixed(2) ?? "—"})`
+          })
+          if (hhaParts.length > 0) {
+            oddsLines.push(`🏟️ ${hhaParts.join(" | ")}`)
+          }
+        }
+
+        const hil = oddsData["HIL"] as
+          | { combinations?: Array<{ str: string; odds: number; status: string; condition?: string }> }
+          | undefined
+        const hilCombos = hil?.combinations
+        if (hilCombos) {
+          const conds = [...new Set(hilCombos.filter(c => c.status === "AVAILABLE" && c.condition).map(c => c.condition!))]
+          const condsShown = conds.slice(0, 2)
+          const hilParts = condsShown.map((cond) => {
+            const h = hilCombos.find((c) => c.condition === cond && c.str === "H")
+            const l = hilCombos.find((c) => c.condition === cond && c.str === "L")
+            return `大 ${cond} (${h?.odds.toFixed(2) ?? "—"}) | 細 ${cond} (${l?.odds.toFixed(2) ?? "—"})`
+          })
+          if (hilParts.length > 0) {
+            oddsLines.push(`⚽ ${hilParts.join(" | ")}`)
+          }
+        }
+
+        const chd = oddsData["CHD"] as
+          | { combinations?: Array<{ str: string; odds: number; status: string; condition?: string }> }
+          | undefined
+        const chdCombos = chd?.combinations
+        if (chdCombos) {
+          const avail = chdCombos.filter(c => c.status === "AVAILABLE")
+          const chdParts = avail.slice(0, 4).map((c) => {
+            const teamName = c.str === "H" ? m.homeTeam : m.awayTeam
+            const cond = c.str === "H" ? c.condition : (c.condition ? flipCondition(c.condition) : undefined)
+            const suffix = cond ? ` ${cond}` : ""
+            return `${teamName}${suffix} (${c.odds.toFixed(2)})`
+          })
+          if (chdParts.length > 0) {
+            oddsLines.push(`🏳️ ${chdParts.join(" | ")}`)
+          }
+        }
+
+        const chl = oddsData["CHL"] as
+          | { combinations?: Array<{ str: string; odds: number; status: string; condition?: string }> }
+          | undefined
+        const chlCombos = chl?.combinations
+        if (chlCombos) {
+          const conds = [...new Set(chlCombos.filter(c => c.status === "AVAILABLE" && c.condition).map(c => c.condition!))]
+          const condsShown = conds.slice(0, 2)
+          const chlParts = condsShown.map((cond) => {
+            const h = chlCombos.find((c) => c.condition === cond && c.str === "H")
+            const l = chlCombos.find((c) => c.condition === cond && c.str === "L")
+            return `角大 ${cond} (${h?.odds.toFixed(2) ?? "—"}) | 角細 ${cond} (${l?.odds.toFixed(2) ?? "—"})`
+          })
+          if (chlParts.length > 0) {
+            oddsLines.push(`🪣 ${chlParts.join(" | ")}`)
+          }
+        }
       }
-    }
-    const time = m.startTime.toLocaleString("zh-TW", {
-      timeZone: "Asia/Taipei",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-    })
+      const time = m.startTime.toLocaleString("zh-TW", {
+        timeZone: "Asia/Taipei",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+      })
     return (
       `**#${i + 1}** ${m.homeTeam} vs ${m.awayTeam}\n` +
       `　🕐 ${time}\n` +
@@ -1491,7 +1778,7 @@ async function handleHelp(
   const generalCommands = [
     "**`/login <username> <password>`** — 登入或註冊帳號",
     "**`/stat`** — 查詢個人下注統計與累計盈虧",
-    "**`/bet place <prediction> <amount>`** — 對比賽下注（主客和 / 讓球，自動帶入賠率）",
+    "**`/bet place <prediction> <amount>`** — 對比賽下注（6 種玩法：主客和、讓球、讓球主客和、入球大細、角球讓球、角球大細）",
     "**`/bet other <odds> <amount> [prediction]`** — 手動輸入賠率下注",
     "**`/bet history [page]`** — 查看個人下注紀錄",
     "**`/rank`** — 查看所有用戶排行榜 Top 10",
@@ -1506,7 +1793,17 @@ async function handleHelp(
     "**`/admin list`** — 列出所有用戶",
     "**`/admin resetpw <username> <new_password>`** — 重設密碼",
     "**`/admin delete <username>`** — 刪除用戶及下注紀錄",
-    "**`/analyst`** — 對明日比賽執行 DeepSeek AI 分析",
+    "**`/admin bet-place`** — 代用戶下注（6 種玩法）",
+    "**`/admin bet-other`** — 代用戶手動賠率下注",
+    "**`/analyst run`** — 對明日比賽執行 DeepSeek AI 分析",
+    "**`/analyst match`** — 分析指定單場賽事",
+    "**`/analyst history`** — 查詢分析紀錄",
+    "**`/analyst result`** — 標記分析結果輸贏",
+    "**`/match`** — 同步賽程與賠率",
+    "**`/score`** — 標記過期比賽為 finished，自動結算 pending 下注",
+    "**`/check list`** — 查看所有 pending 下注",
+    "**`/check win <bet_id>`** — 手動標記下注獲勝",
+    "**`/check loss <bet_id>`** — 手動標記下注失敗",
   ]
 
   const embed = new EmbedBuilder()
@@ -1563,12 +1860,20 @@ async function handleScore(
 
     let updatedCount = 0
     let scoreCount = 0
+    let totalSettled = 0
+    let totalWon = 0
+    let totalLost = 0
+    let totalSkipped = 0
+    const settlementDetails: string[] = []
 
     if (hkjcIds.length > 0) {
       const results = await fetchRunningMatches(hkjcIds)
       const updatedIds = new Set<string>()
 
       for (const r of results) {
+        const staleMatch = staleMatches.find((m) => m.hkjcMatchId === r.hkjcMatchId)
+        if (!staleMatch) continue
+
         await prisma.match.update({
           where: { hkjcMatchId: r.hkjcMatchId },
           data: {
@@ -1580,6 +1885,28 @@ async function handleScore(
         updatedCount++
         if (r.result) {
           scoreCount++
+
+          // 自動結算該場 pending bets
+          const [hs, as] = r.result.split(":")
+          const homeScore = parseInt(hs) || 0
+          const awayScore = parseInt(as) || 0
+
+          const settle = await settleMatchBets(staleMatch.id, {
+            homeScore,
+            awayScore,
+            homeCorner: r.homeCorner,
+            awayCorner: r.awayCorner,
+          })
+
+          totalSettled += settle.settled
+          totalWon += settle.won
+          totalLost += settle.lost
+          totalSkipped += settle.skipped
+          if (settle.details.length > 0) {
+            settlementDetails.push(
+              ...settle.details.map((d) => `${r.homeTeam} vs ${r.awayTeam}: ${d}`)
+            )
+          }
         }
       }
 
@@ -1613,7 +1940,24 @@ async function handleScore(
         { name: "標記 finished", value: `${updatedCount}`, inline: true },
         { name: "補上比分", value: `${scoreCount}`, inline: true }
       )
-      .setTimestamp()
+
+    if (totalSettled > 0 || totalSkipped > 0) {
+      embed.addFields(
+        { name: "自動結算", value: `${totalSettled} 筆 (✅${totalWon} / ❌${totalLost})`, inline: true },
+        totalSkipped > 0
+          ? { name: "⚠️ 無法結算", value: `${totalSkipped} 筆`, inline: true }
+          : { name: "\u200B", value: "\u200B", inline: true }
+      )
+      const logText = settlementDetails.slice(0, 20).join("\n")
+      if (logText) {
+        embed.addFields({
+          name: "結算明細",
+          value: logText.length > 1024 ? logText.slice(0, 1021) + "..." : logText,
+        })
+      }
+    }
+
+    embed.setTimestamp()
 
     await interaction.editReply({ embeds: [embed] })
   } catch (error) {
@@ -1879,13 +2223,74 @@ async function handleAdminBetPlace(
       const hdc = oddsData["HDC"] as
         | { combinations?: Array<{ str: string; name: string; odds: number; condition?: string }> }
         | undefined
-      const matchComb = hdc?.combinations?.find((c) => c.str === prediction)
+      const parts = prediction.split("|")
+      const matchComb = hdc?.combinations?.find(
+        (c) => c.str === parts[0] && (!parts[1] || c.condition === parts[1])
+      )
       if (matchComb) {
         betOdds = matchComb.odds
-        const teamName = prediction === "H" ? match.homeTeam : match.awayTeam
+        const teamName = parts[0] === "H" ? match.homeTeam : match.awayTeam
         predictionText = matchComb.condition
           ? `${teamName} ${matchComb.condition}`
           : teamName
+      }
+    }
+
+    if (betType === "HHA" && oddsData) {
+      const hha = oddsData["HHA"] as
+        | { combinations?: Array<{ str: string; name: string; odds: number; condition?: string }> }
+        | undefined
+      const parts = prediction.split("|")
+      const matchComb = hha?.combinations?.find((c) => c.str === parts[0] && c.condition === parts[1])
+      if (matchComb) {
+        betOdds = matchComb.odds
+        const condLabel = matchComb.condition ?? ""
+        if (parts[0] === "H") predictionText = `${match.homeTeam} ${condLabel}`
+        else if (parts[0] === "D") predictionText = `和局 ${condLabel}`
+        else if (parts[0] === "A") predictionText = `${match.awayTeam} ${condLabel}`
+      }
+    }
+
+    if (betType === "HIL" && oddsData) {
+      const hil = oddsData["HIL"] as
+        | { combinations?: Array<{ str: string; name: string; odds: number; condition?: string }> }
+        | undefined
+      const parts = prediction.split("|")
+      const matchComb = hil?.combinations?.find((c) => c.str === parts[0] && c.condition === parts[1])
+      if (matchComb) {
+        betOdds = matchComb.odds
+        if (parts[0] === "H") predictionText = `大 ${parts[1]}`
+        else if (parts[0] === "L") predictionText = `細 ${parts[1]}`
+      }
+    }
+
+    if (betType === "CHD" && oddsData) {
+      const chd = oddsData["CHD"] as
+        | { combinations?: Array<{ str: string; name: string; odds: number; condition?: string }> }
+        | undefined
+      const parts = prediction.split("|")
+      const matchComb = chd?.combinations?.find(
+        (c) => c.str === parts[0] && (!parts[1] || c.condition === parts[1])
+      )
+      if (matchComb) {
+        betOdds = matchComb.odds
+        const teamName = parts[0] === "H" ? match.homeTeam : match.awayTeam
+        predictionText = matchComb.condition
+          ? `${teamName} ${matchComb.condition}`
+          : teamName
+      }
+    }
+
+    if (betType === "CHL" && oddsData) {
+      const chl = oddsData["CHL"] as
+        | { combinations?: Array<{ str: string; name: string; odds: number; condition?: string }> }
+        | undefined
+      const parts = prediction.split("|")
+      const matchComb = chl?.combinations?.find((c) => c.str === parts[0] && c.condition === parts[1])
+      if (matchComb) {
+        betOdds = matchComb.odds
+        if (parts[0] === "H") predictionText = `角球大 ${parts[1]}`
+        else if (parts[0] === "L") predictionText = `角球細 ${parts[1]}`
       }
     }
 
@@ -1904,6 +2309,10 @@ async function handleAdminBetPlace(
     const typeLabels: Record<string, string> = {
       HAD: "主客和",
       HDC: "讓球",
+      HHA: "讓球主客和",
+      HIL: "入球大細",
+      CHD: "角球讓球",
+      CHL: "角球大細",
     }
 
     const embed = new EmbedBuilder()
