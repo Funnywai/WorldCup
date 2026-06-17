@@ -30,3 +30,22 @@ export const checkCommand = new SlashCommandBuilder()
           .setAutocomplete(true)
       )
   )
+  .addSubcommand((sub) =>
+    sub
+      .setName("stop")
+      .setDescription("將下注標記為 check stop，退還部分金額")
+      .addStringOption((opt) =>
+        opt
+          .setName("bet_id")
+          .setDescription("選擇 pending 下注")
+          .setRequired(true)
+          .setAutocomplete(true)
+      )
+      .addNumberOption((opt) =>
+        opt
+          .setName("refund")
+          .setDescription("退還金額")
+          .setRequired(true)
+          .setMinValue(0)
+      )
+  )

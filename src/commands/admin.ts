@@ -98,6 +98,13 @@ export const adminCommand = new SlashCommandBuilder()
           .setRequired(true)
           .setMinValue(1)
       )
+      .addNumberOption((opt) =>
+        opt
+          .setName("odds")
+          .setDescription("手動輸入賠率（選填，優先於系統賠率）")
+          .setRequired(false)
+          .setMinValue(1.01)
+      )
   )
   .addSubcommand((sub) =>
     sub

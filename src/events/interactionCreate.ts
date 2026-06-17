@@ -73,6 +73,9 @@ export async function onInteractionCreate(
     case "check":
       await handleCheck(interaction)
       break
+    case "fix":
+      await handleFix(interaction)
+      break
   }
 }
 
@@ -320,19 +323,15 @@ async function handleAutocomplete(
     }
 
     if (focusedOption.name === "match") {
-      const threeHoursAgo = new Date(Date.now() - 3 * 60 * 60 * 1000)
       const matches = await prisma.match.findMany({
-        where: {
-          OR: [
-            { status: "scheduled" },
-            { status: "live", startTime: { gt: threeHoursAgo } },
-          ],
-        },
-        orderBy: { startTime: "asc" },
+        orderBy: { startTime: "desc" },
+        take: 20,
       })
+      const statusLabel = (s: string) =>
+        s === "finished" ? "已結束" : s === "live" ? "進行中" : "待開始"
       await interaction.respond(
         matches.map((m) => ({
-          name: `${m.homeTeam} vs ${m.awayTeam}`,
+          name: `${m.homeTeam} vs ${m.awayTeam} [${statusLabel(m.status)}]`,
           value: m.id,
         }))
       )
@@ -1680,6 +1679,7 @@ async function handleHelp(
     "**`/check list`** — 查看所有 pending 下注",
     "**`/check win <bet_id>`** — 手動標記下注獲勝",
     "**`/check loss <bet_id>`** — 手動標記下注失敗",
+    "**`/check stop <bet_id> <refund>`** — 標記 check stop，退還部分金額",
   ]
 
   const embed = new EmbedBuilder()
@@ -1724,6 +1724,9 @@ async function handleCheck(
       break
     case "loss":
       await handleCheckLoss(interaction)
+      break
+    case "stop":
+      await handleCheckStop(interaction)
       break
   }
 }
@@ -1901,6 +1904,164 @@ async function handleCheckLoss(
   }
 }
 
+// ─── /check stop ────────────────────────────────────────────────────────────
+
+async function handleCheckStop(
+  interaction: ChatInputCommandInteraction
+): Promise<void> {
+  try {
+    const betId = interaction.options.getString("bet_id", true)
+    const refund = interaction.options.getNumber("refund", true)
+
+    const bet = await prisma.bet.findUnique({
+      where: { id: betId },
+      include: { match: true, user: true },
+    })
+
+    if (!bet) {
+      await interaction.reply({
+        content: "❌ 找不到該下注，請確認 ID 是否正確。",
+        ephemeral: true,
+      })
+      return
+    }
+
+    if (bet.status !== "pending") {
+      await interaction.reply({
+        content: `❌ 該下注狀態為 \`${bet.status}\`，無法修改。`,
+        ephemeral: true,
+      })
+      return
+    }
+
+    const netLoss = bet.amount - refund
+
+    await prisma.$transaction([
+      prisma.bet.update({
+        where: { id: bet.id },
+        data: { status: "lost", refund },
+      }),
+      prisma.user.update({
+        where: { id: bet.userId },
+        data: {
+          totalLost: { increment: 1 },
+          totalProfit: { decrement: netLoss },
+        },
+      }),
+    ])
+
+    const embed = new EmbedBuilder()
+      .setColor(0xff8800)
+      .setTitle("⚠️ 已標記為 Check Stop")
+      .addFields(
+        { name: "用戶", value: bet.user.username, inline: true },
+        { name: "比賽", value: `${bet.match.homeTeam} vs ${bet.match.awayTeam}`, inline: true },
+        { name: "下注額", value: `$${bet.amount.toFixed(2)}`, inline: true },
+        { name: "退款", value: `+$${refund.toFixed(2)}`, inline: true },
+        { name: "淨虧損", value: `-$${netLoss.toFixed(2)}`, inline: true }
+      )
+      .setTimestamp()
+
+    await interaction.reply({ embeds: [embed], ephemeral: true })
+  } catch (error) {
+    console.error("❌ /check stop 執行錯誤:", error)
+    await interaction.reply({
+      content: "❌ 操作時發生錯誤，請稍後再試。",
+      ephemeral: true,
+    })
+  }
+}
+
+// ─── /fix ───────────────────────────────────────────────────────────────────
+
+async function handleFix(
+  interaction: ChatInputCommandInteraction
+): Promise<void> {
+  if (!(await requireAdmin(interaction))) return
+
+  const subcommand = interaction.options.getSubcommand()
+
+  switch (subcommand) {
+    case "profit":
+      await handleFixProfit(interaction)
+      break
+  }
+}
+
+async function handleFixProfit(
+  interaction: ChatInputCommandInteraction
+): Promise<void> {
+  try {
+    await interaction.deferReply({ ephemeral: true })
+
+    const [users, allBets] = await Promise.all([
+      prisma.user.findMany({ where: { status: "active" } }),
+      prisma.bet.findMany({ include: { user: true } }),
+    ])
+
+    const betsByUser = new Map<string, (typeof allBets)[number][]>()
+    for (const bet of allBets) {
+      const arr = betsByUser.get(bet.userId) || []
+      arr.push(bet)
+      betsByUser.set(bet.userId, arr)
+    }
+
+    const rows: { username: string; oldProfit: number; newProfit: number; bets: number; won: number; lost: number }[] = []
+
+    await prisma.$transaction(
+      users.map((user) => {
+        const bets = betsByUser.get(user.id) || []
+        const totalBets = bets.length
+        const totalWon = bets.filter((b) => b.status === "won").length
+        const totalLost = bets.filter((b) => b.status === "lost").length
+        let totalProfit = 0
+
+        for (const bet of bets) {
+          if (bet.status === "won") {
+            totalProfit += bet.amount * (bet.odds - 1)
+          } else if (bet.status === "lost") {
+            const refund = bet.refund ?? 0
+            totalProfit -= (bet.amount - refund)
+          }
+        }
+
+        rows.push({
+          username: user.username,
+          oldProfit: user.totalProfit,
+          newProfit: totalProfit,
+          bets: totalBets,
+          won: totalWon,
+          lost: totalLost,
+        })
+
+        return prisma.user.update({
+          where: { id: user.id },
+          data: { totalBets, totalWon, totalLost, totalProfit },
+        })
+      })
+    )
+
+    const lines = rows.map(
+      (r) =>
+        `**${r.username}** — 下注 ${r.bets} | 勝 ${r.won} | 負 ${r.lost}\n` +
+        `　Profit: ~~$${r.oldProfit.toFixed(2)}~~ → **$${r.newProfit.toFixed(2)}**`
+    )
+
+    const embed = new EmbedBuilder()
+      .setColor(0x00ccff)
+      .setTitle("🔧 /fix profit 完成")
+      .setDescription(lines.join("\n"))
+      .setTimestamp()
+
+    await interaction.editReply({ embeds: [embed] })
+  } catch (error) {
+    console.error("❌ /fix profit 執行錯誤:", error)
+    await interaction.editReply({
+      content: "❌ 操作時發生錯誤，請稍後再試。",
+    })
+  }
+}
+
 // ─── /admin bet-place ──────────────────────────────────────────────────────
 
 async function handleAdminBetPlace(
@@ -1914,6 +2075,7 @@ async function handleAdminBetPlace(
     const betType = interaction.options.getString("type", true)
     const prediction = interaction.options.getString("prediction", true)
     const amount = interaction.options.getNumber("amount", true)
+    const manualOdds = interaction.options.getNumber("odds", false)
 
     const user = await prisma.user.findUnique({ where: { username } })
     if (!user) {
@@ -1924,10 +2086,6 @@ async function handleAdminBetPlace(
     const match = await prisma.match.findUnique({ where: { id: matchId } })
     if (!match) {
       await interaction.editReply("❌ 找不到該比賽。")
-      return
-    }
-    if (!["scheduled", "live"].includes(match.status)) {
-      await interaction.editReply("❌ 該比賽已結束，無法下注。")
       return
     }
 
@@ -2029,6 +2187,10 @@ async function handleAdminBetPlace(
       }
     }
 
+    if (manualOdds !== null) {
+      betOdds = manualOdds
+    }
+
     await prisma.$transaction([
       prisma.user.update({
         where: { id: user.id },
@@ -2104,10 +2266,6 @@ async function handleAdminBetOther(
     const match = await prisma.match.findUnique({ where: { id: matchId } })
     if (!match) {
       await interaction.editReply("❌ 找不到該比賽。")
-      return
-    }
-    if (!["scheduled", "live"].includes(match.status)) {
-      await interaction.editReply("❌ 該比賽已結束，無法下注。")
       return
     }
 

@@ -48,6 +48,7 @@ model Bet {
   betType    String   @default("HAD")   // HAD | HDC
   prediction String
   status     String   @default("pending") // pending, won, lost
+  refund     Float?
   createdAt  DateTime @default(now())
 
   user  User  @relation(fields: [userId], references: [id])
