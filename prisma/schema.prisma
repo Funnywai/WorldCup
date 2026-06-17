@@ -36,8 +36,7 @@ model Match {
   oddsUpdatedAt  DateTime?
   createdAt      DateTime  @default(now())
 
-  bets         Bet[]
-  analysisLogs AnalysisLog[]
+  bets Bet[]
 }
 
 model Bet {
@@ -52,15 +51,5 @@ model Bet {
   createdAt  DateTime @default(now())
 
   user  User  @relation(fields: [userId], references: [id])
-  match Match @relation(fields: [matchId], references: [id])
-}
-
-model AnalysisLog {
-  id             String   @id @default(uuid())
-  matchId        String
-  deepseekOutput String
-  status         String   @default("pending") // pending | won | lost
-  createdAt      DateTime @default(now())
-
   match Match @relation(fields: [matchId], references: [id])
 }

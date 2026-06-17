@@ -11,8 +11,7 @@ import {
 } from "discord.js"
 import prisma from "../db/prisma"
 import { requireAuth, requireAdmin, hashPassword, verifyPassword } from "../services/auth"
-import { fetchWorldCupMatches, fetchRunningMatches } from "../services/hkjc"
-import { settleMatchBets } from "../services/settlement"
+import { fetchWorldCupMatches } from "../services/hkjc"
 import { upsertMatchesToDb, analyzeAndPost, analyzeSingleMatch, formatDate } from "../services/dailyAnalysis"
 
 function flipPart(part: string): string {
@@ -70,9 +69,6 @@ export async function onInteractionCreate(
       break
     case "analyst":
       await handleAnalyst(interaction)
-      break
-    case "score":
-      await handleScore(interaction)
       break
     case "check":
       await handleCheck(interaction)
@@ -305,20 +301,6 @@ async function handleAutocomplete(
       const choices = matches.map((m) => ({
         name: `${m.homeTeam} vs ${m.awayTeam}`,
         value: m.id,
-      }))
-      await interaction.respond(choices)
-    }
-
-    if (focusedOption.name === "analysis_id") {
-      const logs = await prisma.analysisLog.findMany({
-        include: { match: true },
-        orderBy: { createdAt: "desc" },
-        take: 25,
-      })
-
-      const choices = logs.map((l) => ({
-        name: `${l.match.homeTeam} vs ${l.match.awayTeam} (${l.createdAt.toLocaleDateString("zh-TW")})`,
-        value: l.id,
       }))
       await interaction.respond(choices)
     }
@@ -1597,12 +1579,6 @@ async function handleAnalyst(
       case "match":
         await handleAnalystMatch(interaction)
         break
-      case "history":
-        await handleAnalystHistory(interaction)
-        break
-      case "result":
-        await handleAnalystResult(interaction)
-        break
     }
   } catch (error) {
     console.error(`❌ /analyst ${subcommand} 執行錯誤:`, error)
@@ -1668,103 +1644,6 @@ async function handleAnalystMatch(
   )
 }
 
-async function handleAnalystHistory(
-  interaction: ChatInputCommandInteraction
-): Promise<void> {
-  const page = interaction.options.getInteger("page") ?? 1
-  const perPage = 5
-
-  const [logs, total] = await Promise.all([
-    prisma.analysisLog.findMany({
-      include: { match: true },
-      orderBy: { createdAt: "desc" },
-      skip: (page - 1) * perPage,
-      take: perPage,
-    }),
-    prisma.analysisLog.count(),
-  ])
-
-  if (logs.length === 0) {
-    await interaction.reply({
-      content: "📭 目前沒有分析紀錄。",
-      ephemeral: true,
-    })
-    return
-  }
-
-  const stats = await prisma.analysisLog.groupBy({
-    by: ["status"],
-    _count: true,
-  })
-  const won = stats.find((s) => s.status === "won")?._count ?? 0
-  const lost = stats.find((s) => s.status === "lost")?._count ?? 0
-  const decided = won + lost
-  const accuracy =
-    decided > 0 ? ((won / decided) * 100).toFixed(1) : "—"
-
-  const lines = logs.map((log) => {
-    const m = log.match
-    const statusEmoji =
-      log.status === "won"
-        ? "✅ 正確"
-        : log.status === "lost"
-          ? "❌ 錯誤"
-          : "⏳ 待判定"
-    const time = new Date(m.startTime).toLocaleString("zh-TW", {
-      timeZone: "Asia/Taipei",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-    })
-    return `**${m.homeTeam} vs ${m.awayTeam}** | ${time} | ${statusEmoji}\n　┗ ID: \`${log.id}\``
-  })
-
-  const totalPages = Math.ceil(total / perPage)
-
-  const embed = new EmbedBuilder()
-    .setColor(0x1e90ff)
-    .setTitle(`📋 分析紀錄 (第 ${page}/${totalPages} 頁)`)
-    .setDescription(lines.join("\n\n"))
-    .setFooter({
-      text: `AI 準確率: ${won}W / ${lost}L = ${accuracy}% | 共 ${total} 筆紀錄`,
-    })
-    .setTimestamp()
-
-  await interaction.reply({ embeds: [embed], ephemeral: true })
-}
-
-async function handleAnalystResult(
-  interaction: ChatInputCommandInteraction
-): Promise<void> {
-  const analysisId = interaction.options.getString("analysis_id", true)
-  const outcome = interaction.options.getString("outcome", true)
-
-  const log = await prisma.analysisLog.findUnique({
-    where: { id: analysisId },
-    include: { match: true },
-  })
-
-  if (!log) {
-    await interaction.reply({
-      content: "❌ 找不到該分析紀錄。",
-      ephemeral: true,
-    })
-    return
-  }
-
-  await prisma.analysisLog.update({
-    where: { id: analysisId },
-    data: { status: outcome },
-  })
-
-  const statusText = outcome === "won" ? "✅ 正確" : "❌ 錯誤"
-  await interaction.reply({
-    content: `已將 **${log.match.homeTeam} vs ${log.match.awayTeam}** 的分析標記為 ${statusText}`,
-    ephemeral: true,
-  })
-}
-
 // ─── /help ────────────────────────────────────────────────────────────────
 
 async function handleHelp(
@@ -1797,10 +1676,7 @@ async function handleHelp(
     "**`/admin bet-other`** — 代用戶手動賠率下注",
     "**`/analyst run`** — 對明日比賽執行 DeepSeek AI 分析",
     "**`/analyst match`** — 分析指定單場賽事",
-    "**`/analyst history`** — 查詢分析紀錄",
-    "**`/analyst result`** — 標記分析結果輸贏",
     "**`/match`** — 同步賽程與賠率",
-    "**`/score`** — 標記過期比賽為 finished，自動結算 pending 下注",
     "**`/check list`** — 查看所有 pending 下注",
     "**`/check win <bet_id>`** — 手動標記下注獲勝",
     "**`/check loss <bet_id>`** — 手動標記下注失敗",
@@ -1828,147 +1704,6 @@ async function handleHelp(
     .setTimestamp()
 
   await interaction.reply({ embeds: [embed], ephemeral: true })
-}
-
-// ─── /score ────────────────────────────────────────────────────────────────
-
-async function handleScore(
-  interaction: ChatInputCommandInteraction
-): Promise<void> {
-  if (!(await requireAdmin(interaction))) return
-
-  try {
-    await interaction.deferReply()
-
-    const threeHoursAgo = new Date(Date.now() - 3 * 60 * 60 * 1000)
-
-    const staleMatches = await prisma.match.findMany({
-      where: {
-        status: { in: ["scheduled", "live"] },
-        startTime: { lt: threeHoursAgo },
-      },
-    })
-
-    if (staleMatches.length === 0) {
-      await interaction.editReply("📭 沒有超過 3 小時仍未結束的比賽。")
-      return
-    }
-
-    const hkjcIds = staleMatches
-      .map((m) => m.hkjcMatchId)
-      .filter((id): id is string => id !== null)
-
-    let updatedCount = 0
-    let scoreCount = 0
-    let totalSettled = 0
-    let totalWon = 0
-    let totalLost = 0
-    let totalSkipped = 0
-    const settlementDetails: string[] = []
-
-    if (hkjcIds.length > 0) {
-      const results = await fetchRunningMatches(hkjcIds)
-      const updatedIds = new Set<string>()
-
-      for (const r of results) {
-        const staleMatch = staleMatches.find((m) => m.hkjcMatchId === r.hkjcMatchId)
-        if (!staleMatch) continue
-
-        await prisma.match.update({
-          where: { hkjcMatchId: r.hkjcMatchId },
-          data: {
-            status: "finished",
-            result: r.result ?? null,
-          },
-        })
-        updatedIds.add(r.hkjcMatchId!)
-        updatedCount++
-        if (r.result) {
-          scoreCount++
-
-          // 自動結算該場 pending bets
-          const [hs, as] = r.result.split(":")
-          const homeScore = parseInt(hs) || 0
-          const awayScore = parseInt(as) || 0
-
-          const settle = await settleMatchBets(staleMatch.id, {
-            homeScore,
-            awayScore,
-            homeCorner: r.homeCorner,
-            awayCorner: r.awayCorner,
-          })
-
-          totalSettled += settle.settled
-          totalWon += settle.won
-          totalLost += settle.lost
-          totalSkipped += settle.skipped
-          if (settle.details.length > 0) {
-            settlementDetails.push(
-              ...settle.details.map((d) => `${r.homeTeam} vs ${r.awayTeam}: ${d}`)
-            )
-          }
-        }
-      }
-
-      const remainingIds = staleMatches
-        .filter((m) => m.hkjcMatchId && !updatedIds.has(m.hkjcMatchId))
-        .map((m) => m.id)
-
-      if (remainingIds.length > 0) {
-        await prisma.match.updateMany({
-          where: { id: { in: remainingIds } },
-          data: { status: "finished" },
-        })
-        updatedCount += remainingIds.length
-      }
-    } else {
-      await prisma.match.updateMany({
-        where: {
-          status: { in: ["scheduled", "live"] },
-          startTime: { lt: threeHoursAgo },
-        },
-        data: { status: "finished" },
-      })
-      updatedCount = staleMatches.length
-    }
-
-    const embed = new EmbedBuilder()
-      .setColor(0x00ff00)
-      .setTitle("✅ 比賽狀態更新完成")
-      .addFields(
-        { name: "檢查比賽數", value: `${staleMatches.length}`, inline: true },
-        { name: "標記 finished", value: `${updatedCount}`, inline: true },
-        { name: "補上比分", value: `${scoreCount}`, inline: true }
-      )
-
-    if (totalSettled > 0 || totalSkipped > 0) {
-      embed.addFields(
-        { name: "自動結算", value: `${totalSettled} 筆 (✅${totalWon} / ❌${totalLost})`, inline: true },
-        totalSkipped > 0
-          ? { name: "⚠️ 無法結算", value: `${totalSkipped} 筆`, inline: true }
-          : { name: "\u200B", value: "\u200B", inline: true }
-      )
-      const logText = settlementDetails.slice(0, 20).join("\n")
-      if (logText) {
-        embed.addFields({
-          name: "結算明細",
-          value: logText.length > 1024 ? logText.slice(0, 1021) + "..." : logText,
-        })
-      }
-    }
-
-    embed.setTimestamp()
-
-    await interaction.editReply({ embeds: [embed] })
-  } catch (error) {
-    console.error("❌ /score 執行錯誤:", error)
-    const content = "❌ 更新比賽狀態時發生錯誤，請稍後再試。"
-    if (interaction.deferred) {
-      await interaction.editReply(content)
-    } else {
-      await interaction.reply({ content, ephemeral: true })
-    }
-  }
 }
 
 // ─── /check ────────────────────────────────────────────────────────────────
@@ -2294,17 +2029,23 @@ async function handleAdminBetPlace(
       }
     }
 
-    await prisma.bet.create({
-      data: {
-        userId: user.id,
-        matchId: match.id,
-        amount,
-        odds: betOdds,
-        betType,
-        prediction,
-        status: "pending",
-      },
-    })
+    await prisma.$transaction([
+      prisma.user.update({
+        where: { id: user.id },
+        data: { totalBets: { increment: 1 } },
+      }),
+      prisma.bet.create({
+        data: {
+          userId: user.id,
+          matchId: match.id,
+          amount,
+          odds: betOdds,
+          betType,
+          prediction,
+          status: "pending",
+        },
+      }),
+    ])
 
     const typeLabels: Record<string, string> = {
       HAD: "主客和",
@@ -2372,17 +2113,23 @@ async function handleAdminBetOther(
 
     const predictionText = prediction || "手動下注"
 
-    await prisma.bet.create({
-      data: {
-        userId: user.id,
-        matchId: match.id,
-        amount,
-        odds: manualOdds,
-        betType: "OTHER",
-        prediction,
-        status: "pending",
-      },
-    })
+    await prisma.$transaction([
+      prisma.user.update({
+        where: { id: user.id },
+        data: { totalBets: { increment: 1 } },
+      }),
+      prisma.bet.create({
+        data: {
+          userId: user.id,
+          matchId: match.id,
+          amount,
+          odds: manualOdds,
+          betType: "OTHER",
+          prediction,
+          status: "pending",
+        },
+      }),
+    ])
 
     const embed = new EmbedBuilder()
       .setColor(0x00aaff)

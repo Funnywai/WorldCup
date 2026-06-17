@@ -1,7 +1,7 @@
 import cron from "node-cron"
 import { Client, EmbedBuilder, TextChannel } from "discord.js"
 import prisma from "../db/prisma"
-import { fetchWorldCupMatches, type HkjcMatchData } from "./hkjc"
+import { fetchWorldCupMatches, fetchHistoricMatchResults, type HkjcMatchData } from "./hkjc"
 import { generateMatchAnalysis } from "./deepseek"
 import { Match } from "@prisma/client"
 
@@ -93,26 +93,17 @@ export async function upsertMatchesToDb(
 export async function analyzeSingleMatch(
   matchRecord: Match,
   channel: TextChannel
-): Promise<AnalysisLogResult> {
+): Promise<void> {
   const historicalContext = await buildHistoricalContext([matchRecord])
   const matchData = buildMatchForAnalysis(matchRecord)
 
   console.log(`🤖 正在分析 ${matchRecord.homeTeam} vs ${matchRecord.awayTeam}...`)
   const analysis = await generateMatchAnalysis([matchData], historicalContext)
 
-  const log = await prisma.analysisLog.create({
-    data: {
-      matchId: matchRecord.id,
-      deepseekOutput: analysis,
-    },
-  })
-
   const embed = buildAnalysisEmbed(matchRecord, analysis)
 
   await channel.send({ embeds: [embed] })
   console.log(`✅ 已發送 ${matchRecord.homeTeam} vs ${matchRecord.awayTeam} 分析`)
-
-  return log as AnalysisLogResult
 }
 
 export async function analyzeAndPost(
@@ -142,13 +133,6 @@ export async function analyzeAndPost(
 
     console.log(`🤖 正在分析 ${match.homeTeam} vs ${match.awayTeam}...`)
     const analysis = await generateMatchAnalysis([matchData], historicalContext)
-
-    await prisma.analysisLog.create({
-      data: {
-        matchId: match.id,
-        deepseekOutput: analysis,
-      },
-    })
 
     await channel.send({ embeds: [buildAnalysisEmbed(match, analysis)] })
   }
@@ -326,19 +310,58 @@ export function formatDate(date: Date): string {
   return `${yyyy}-${mm}-${dd}`
 }
 
-export interface AnalysisLogResult {
-  id: string
-  matchId: string
-  deepseekOutput: string
-  status: string
-  createdAt: Date
-}
-
 const HK_TIME = () =>
   new Date().toLocaleString("zh-HK", { timeZone: "Asia/Hong_Kong", hour12: false })
 
+async function settleStaleMatches(): Promise<void> {
+  const threeHoursAgo = new Date(Date.now() - 3 * 60 * 60 * 1000)
+
+  const stale = await prisma.match.findMany({
+    where: {
+      status: "live",
+      startTime: { lt: threeHoursAgo },
+    },
+  })
+
+  if (stale.length === 0) return
+
+  console.log(`[${HK_TIME()}] 🧹 [Cron Fetch] 發現 ${stale.length} 場過期比賽，標記為 finished...`)
+
+  const dateSet = new Set<string>()
+  for (const m of stale) {
+    dateSet.add(formatDate(m.startTime))
+  }
+
+  const resultsMap = new Map<string, string>()
+  for (const date of dateSet) {
+    try {
+      const hist = await fetchHistoricMatchResults(date, date)
+      for (const r of hist) {
+        resultsMap.set(r.hkjcMatchId, `${r.homeScore}:${r.awayScore}`)
+      }
+    } catch {
+      // 歷史 API 可能尚無資料
+    }
+  }
+
+  let fixedCount = 0
+  for (const m of stale) {
+    const finalResult = m.hkjcMatchId ? resultsMap.get(m.hkjcMatchId) ?? undefined : undefined
+    await prisma.match.update({
+      where: { id: m.id },
+      data: {
+        status: "finished",
+        ...(finalResult ? { result: finalResult } : {}),
+      },
+    })
+    if (finalResult) fixedCount++
+  }
+
+  console.log(`[${HK_TIME()}] ✅ [Cron Fetch] 已標記 ${stale.length} 場 finished (${fixedCount} 場補上最終比分)`)
+}
+
 export function startMatchFetchCron(): void {
-  const CRON_FETCH = process.env.CRON_FETCH || "*/15 * * * *"
+  const CRON_FETCH = process.env.CRON_FETCH || "*/5 * * * *"
   cron.schedule(CRON_FETCH, async () => {
     try {
       const todayStr = formatDate(new Date())
@@ -358,6 +381,8 @@ export function startMatchFetchCron(): void {
       } else {
         console.log(`[${HK_TIME()}] 📭 [Cron Fetch] 暫無世界盃賽事`)
       }
+
+      await settleStaleMatches()
     } catch (error) {
       console.error(`[${HK_TIME()}] ❌ [Cron Fetch] 背景同步失敗:`, error)
     }
