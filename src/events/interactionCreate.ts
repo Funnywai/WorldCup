@@ -1680,6 +1680,7 @@ async function handleHelp(
     "**`/check win <bet_id>`** — 手動標記下注獲勝",
     "**`/check loss <bet_id>`** — 手動標記下注失敗",
     "**`/check stop <bet_id> <refund>`** — 標記 check stop，退還部分金額",
+    "**`/fix profit`** — 從所有下注重新計算每位用戶的盈虧統計",
   ]
 
   const embed = new EmbedBuilder()

@@ -1,16 +1,17 @@
 # WorldCup 2026 世盃分析與下注 Discord Bot
 
-一個模擬下注環境的 Discord Bot，自動從香港賽馬會 (HKJC) 同步世界盃賽程與賠率，搭配 DeepSeek AI 提供每日賽事分析，支援自動結算。
+一個模擬下注環境的 Discord Bot，自動從香港賽馬會 (HKJC) 同步世界盃賽程與賠率，搭配 DeepSeek AI 提供每日賽事分析，由管理員手動結算。
 
 ## 功能
 
-- **賽程查詢** — 查看即將到來的世界盃賽程與即時賠率（7 種玩法），支援 🔄 一鍵重新整理
+- **賽程查詢** — 查看即將到來的世界盃賽程與即時賠率（6 種玩法）
 - **模擬下注** — 支援主客和 (HAD)、讓球 (HDC)、讓球主客和 (HHA)、入球大細 (HIL)、角球讓球 (CHD)、角球大細 (CHL) 共 6 種玩法
-- **自動結算** — `/score` 標記過期比賽為 finished 後自動判定 pending bets 輸贏，更新用戶盈虧
+- **管理員結算** — `/check win/loss` 手動判定 pending bets 輸贏，更新用戶盈虧；`/check stop` 支援部分退款
+- **盈虧修正** — `/fix profit` 從所有下注重新計算每位用戶的盈虧統計
 - **AI 分析** — DeepSeek 定時自動分析賽事，產出專業投注建議
 - **排行榜** — 依累計盈虧排序，顯示所有用戶排名
-- **自動同步** — 背景每 15 分鐘從 HKJC API 拉取最新賠率，無需手動操作
-- **即時賽事** — 已開踢的比賽持續顯示於賽程與下注清單，賠率隨比賽進程更新
+- **自動同步** — 背景每 5 分鐘從 HKJC API 拉取最新賠率，無需手動操作
+- **過期處理** — Cron 自動標記開踢超過 3 小時的比賽為 finished 並嘗試取得最終比數
 
 ## 指令
 
@@ -37,17 +38,16 @@
 | `/admin list` | 列出所有用戶 |
 | `/admin resetpw <username> <new_password>` | 重設密碼 |
 | `/admin delete <username>` | 刪除用戶及下注紀錄 |
-| `/admin bet-place` | 代用戶下注（6 種玩法） |
+| `/admin bet-place` | 代用戶下注（6 種玩法，可選自訂賠率） |
 | `/admin bet-other` | 代用戶手動賠率下注 |
 | `/analyst run` | 對明日比賽執行 DeepSeek AI 分析 |
 | `/analyst match <match_id>` | 分析指定單場賽事 |
-| `/analyst history` | 查詢分析紀錄 |
-| `/analyst result <analysis_id> <status>` | 標記分析結果為 won/lost |
 | `/match` | 同步賽程與賠率 |
-| `/score` | 標記過期比賽為 finished，自動結算 pending bets |
 | `/check list` | 查看所有 pending 下注 |
 | `/check win <bet_id>` | 手動標記下注獲勝 |
 | `/check loss <bet_id>` | 手動標記下注失敗 |
+| `/check stop <bet_id> <refund>` | 標記下注失敗並記錄部分退款金額 |
+| `/fix profit` | 從所有下注重新計算每位用戶的盈虧統計 |
 
 ## 下注流程
 
@@ -65,15 +65,16 @@
   CHD     角球讓球          主隊角球+讓球 vs 客隊角球            "H|-1.5" / "A|-1.5"
   CHL     角球大細          總角球數 vs 界線                   "H|9.5" (大) / "L|9.5" (細)
 
-注意：比賽進行中（live）也可下注
+注意：管理員下注不受比賽狀態限制；一般用戶只能對未開賽比賽下注
 ```
 
 ## 結算機制
 
-| 方式 | 觸發 | 說明 |
-|------|------|------|
-| **自動結算** | `/score` | 比賽 > 3 小時仍未 finished → 從 HKJC 取得比數 → 自動比對所有 pending bets → 更新 won/lost + 用戶盈虧 |
-| **手動結算** | `/check win/loss` | 管理員逐筆手動標記（備用） |
+| 方式 | 說明 |
+|------|------|
+| **手動結算** | 管理員透過 `/check win/loss` 逐筆標記 pending bets 為 won/lost，系統自動更新用戶盈虧 |
+| **部分退款** | `/check stop <bet_id> <refund>` 將下注標記為 lost，同時記錄退款金額 |
+| **盈虧修正** | `/fix profit` 從 Bet 資料表重新計算所有用戶的 totalBets / won / lost / profit |
 
 結算邏輯（`settlement.ts`）：
 - HAD → 比對最終比分判定主勝/和/客勝
@@ -86,8 +87,9 @@
 
 | 任務 | 排程 | 說明 |
 |------|------|------|
-| 賠率同步 | 每 15 分鐘（`CRON_FETCH`） | 背景自動抓取未來 30 天賽事賠率並更新資料庫 |
+| 賠率同步 | 每 5 分鐘（`CRON_FETCH`） | 背景自動抓取未來 30 天賽事賠率並更新資料庫 |
 | 每日分析 | 每日 18:00（`CRON_TIME`） | DeepSeek AI 分析明日賽事並發送至指定頻道 |
+| 過期比賽處理 | 每 5 分鐘 | 自動標記開踢超過 3 小時的比賽為 finished（不自動結算下注） |
 
 排程時間可透過 `.env` 中的 `CRON_FETCH` 與 `CRON_TIME` 環境變數自訂。
 
