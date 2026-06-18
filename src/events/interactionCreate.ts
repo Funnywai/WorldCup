@@ -474,7 +474,7 @@ async function handleAutocomplete(
       })
       await interaction.respond(
         bets.map((b) => ({
-          name: `${b.user.username} | ${b.match.homeTeam} vs ${b.match.awayTeam} | $${b.amount}`,
+          name: `${b.user.username} | ${b.match.homeTeam} vs ${b.match.awayTeam} | ${b.betType} ${b.prediction} | $${b.amount}`.substring(0, 100),
           value: b.id,
         }))
       )
