@@ -93,3 +93,15 @@ export const betCommand = new SlashCommandBuilder()
           .setMinValue(1)
       )
   )
+  .addSubcommand((sub) =>
+    sub
+      .setName("cancel")
+      .setDescription("取消一筆 pending 下注")
+      .addStringOption((opt) =>
+        opt
+          .setName("bet_id")
+          .setDescription("選擇要取消的 pending 下注")
+          .setRequired(true)
+          .setAutocomplete(true)
+      )
+  )

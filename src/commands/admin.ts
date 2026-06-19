@@ -146,6 +146,18 @@ export const adminCommand = new SlashCommandBuilder()
       )
   )
   .addSubcommand((sub) =>
+    sub
+      .setName("bet-cancel")
+      .setDescription("取消任一用戶的 pending 下注")
+      .addStringOption((opt) =>
+        opt
+          .setName("bet_id")
+          .setDescription("選擇要取消的 pending 下注")
+          .setRequired(true)
+          .setAutocomplete(true)
+      )
+  )
+  .addSubcommand((sub) =>
     sub.setName("check-list").setDescription("列出所有 pending 的下注")
   )
   .addSubcommand((sub) =>

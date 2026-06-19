@@ -284,6 +284,26 @@ async function handleAutocomplete(
         await interaction.respond(choices.slice(0, 25))
       }
     }
+
+    if (focusedOption.name === "bet_id") {
+      const subcommand = interaction.options.getSubcommand()
+      if (subcommand === "cancel") {
+        const user = await prisma.user.findUnique({ where: { discordId: interaction.user.id } })
+        if (!user) { await interaction.respond([]); return }
+        const bets = await prisma.bet.findMany({
+          where: { status: "pending", userId: user.id },
+          include: { match: true, user: { select: { username: true } } },
+          orderBy: { createdAt: "asc" },
+          take: 25,
+        })
+        await interaction.respond(
+          bets.map((b) => ({
+            name: `${b.user.username} | ${b.match.homeTeam} vs ${b.match.awayTeam} | ${b.betType} ${b.prediction} | $${b.amount}`.substring(0, 100),
+            value: b.id,
+          }))
+        )
+      }
+    }
   }
 
   if (commandName === "analyst") {
@@ -463,7 +483,7 @@ async function handleAutocomplete(
 
     if (focusedOption.name === "bet_id") {
       const subcommand = interaction.options.getSubcommand()
-      if (["check-win", "check-loss", "check-stop"].includes(subcommand)) {
+      if (["check-win", "check-loss", "check-stop", "bet-cancel"].includes(subcommand)) {
         const bets = await prisma.bet.findMany({
           where: { status: "pending" },
           include: { match: true, user: { select: { username: true } } },
@@ -617,6 +637,9 @@ async function handleAdmin(
         break
       case "bet-other":
         await handleAdminBetOther(interaction)
+        break
+      case "bet-cancel":
+        await handleAdminBetCancel(interaction)
         break
       case "check-list":
         await handleAdminCheckList(interaction)
@@ -904,6 +927,9 @@ async function handleBet(
       break
     case "history":
       await handleBetHistory(interaction, user)
+      break
+    case "cancel":
+      await handleBetCancel(interaction, user)
       break
   }
 }
@@ -1271,6 +1297,62 @@ async function handleBetHistory(
     } else {
       await interaction.reply({ content, ephemeral: true })
     }
+  }
+}
+
+// ─── /bet cancel ────────────────────────────────────────────────────────────
+
+async function handleBetCancel(
+  interaction: ChatInputCommandInteraction,
+  user: { id: string }
+): Promise<void> {
+  try {
+    const betId = interaction.options.getString("bet_id", true)
+
+    const bet = await prisma.bet.findUnique({ where: { id: betId } })
+
+    if (!bet) {
+      await interaction.reply({
+        content: "❌ 找不到該下注，請確認 ID 是否正確。",
+        ephemeral: true,
+      })
+      return
+    }
+
+    if (bet.userId !== user.id) {
+      await interaction.reply({
+        content: "❌ 你只能取消自己的下注。",
+        ephemeral: true,
+      })
+      return
+    }
+
+    if (bet.status !== "pending") {
+      await interaction.reply({
+        content: `❌ 只有 pending 狀態的下注才能取消（目前為 \`${bet.status}\`）。`,
+        ephemeral: true,
+      })
+      return
+    }
+
+    await prisma.$transaction([
+      prisma.bet.delete({ where: { id: bet.id } }),
+      prisma.user.update({
+        where: { id: bet.userId },
+        data: { totalBets: { decrement: 1 } },
+      }),
+    ])
+
+    await interaction.reply({
+      content: "✅ 下注已取消。",
+      ephemeral: true,
+    })
+  } catch (error) {
+    console.error("❌ /bet cancel 執行錯誤:", error)
+    await interaction.reply({
+      content: "❌ 取消下注時發生錯誤，請稍後再試。",
+      ephemeral: true,
+    })
   }
 }
 
@@ -1696,6 +1778,7 @@ async function handleHelp(
     "**`/bet place <prediction> <amount> [odds]`** — 對比賽下注（6 種玩法：主客和、讓球、讓球主客和、入球大細、角球讓球、角球大細）",
     "**`/bet other <odds> <amount> [prediction]`** — 手動輸入賠率下注",
     "**`/bet history [page]`** — 查看個人下注紀錄",
+    "**`/bet cancel <bet_id>`** — 取消一筆 pending 下注",
     "**`/check list`** — 查看你的 pending 下注",
     "**`/check win <bet_id>`** — 手動標記你的下注為獲勝",
     "**`/check loss <bet_id>`** — 手動標記你的下注為失敗",
@@ -1714,6 +1797,7 @@ async function handleHelp(
     "**`/admin delete <username>`** — 刪除用戶及下注紀錄",
     "**`/admin bet-place <username> ... [odds]`** — 代用戶下注（6 種玩法）",
     "**`/admin bet-other <username> ...`** — 代用戶手動賠率下注",
+    "**`/admin bet-cancel <bet_id>`** — 取消任一用戶的 pending 下注",
     "**`/admin check-list`** — 列出所有 pending 下注",
     "**`/admin check-win <bet_id>`** — 將下注標記為獲勝",
     "**`/admin check-loss <bet_id>`** — 將下注標記為失敗",
@@ -2623,5 +2707,55 @@ async function handleAdminBetOther(
     } else {
       await interaction.reply({ content, ephemeral: true })
     }
+  }
+}
+
+// ─── /admin bet-cancel ──────────────────────────────────────────────────────
+
+async function handleAdminBetCancel(
+  interaction: ChatInputCommandInteraction
+): Promise<void> {
+  try {
+    const betId = interaction.options.getString("bet_id", true)
+
+    const bet = await prisma.bet.findUnique({
+      where: { id: betId },
+      include: { user: { select: { username: true } } },
+    })
+
+    if (!bet) {
+      await interaction.reply({
+        content: "❌ 找不到該下注，請確認 ID 是否正確。",
+        ephemeral: true,
+      })
+      return
+    }
+
+    if (bet.status !== "pending") {
+      await interaction.reply({
+        content: `❌ 只有 pending 狀態的下注才能取消（目前為 \`${bet.status}\`）。`,
+        ephemeral: true,
+      })
+      return
+    }
+
+    await prisma.$transaction([
+      prisma.bet.delete({ where: { id: bet.id } }),
+      prisma.user.update({
+        where: { id: bet.userId },
+        data: { totalBets: { decrement: 1 } },
+      }),
+    ])
+
+    await interaction.reply({
+      content: `✅ 已取消 **${bet.user.username}** 的下注。`,
+      ephemeral: true,
+    })
+  } catch (error) {
+    console.error("❌ /admin bet-cancel 執行錯誤:", error)
+    await interaction.reply({
+      content: "❌ 取消下注時發生錯誤，請稍後再試。",
+      ephemeral: true,
+    })
   }
 }
