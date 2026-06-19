@@ -2,7 +2,7 @@ import { SlashCommandBuilder } from "discord.js"
 
 export const checkCommand = new SlashCommandBuilder()
   .setName("check")
-  .setDescription("[管理員] 查看所有 pending 下注並手動判定輸贏")
+  .setDescription("查看你的 pending 下注並手動判定輸贏")
   .addSubcommand((sub) =>
     sub.setName("list").setDescription("列出所有 pending 的下注")
   )

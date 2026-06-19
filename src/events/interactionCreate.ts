@@ -460,14 +460,34 @@ async function handleAutocomplete(
         await interaction.respond(choices.slice(0, 25))
       }
     }
+
+    if (focusedOption.name === "bet_id") {
+      const subcommand = interaction.options.getSubcommand()
+      if (["check-win", "check-loss", "check-stop"].includes(subcommand)) {
+        const bets = await prisma.bet.findMany({
+          where: { status: "pending" },
+          include: { match: true, user: { select: { username: true } } },
+          orderBy: { createdAt: "asc" },
+          take: 25,
+        })
+        await interaction.respond(
+          bets.map((b) => ({
+            name: `${b.user.username} | ${b.match.homeTeam} vs ${b.match.awayTeam} | ${b.betType} ${b.prediction} | $${b.amount}`.substring(0, 100),
+            value: b.id,
+          }))
+        )
+      }
+    }
   }
 
   if (commandName === "check") {
     const focusedOption = interaction.options.getFocused(true)
 
     if (focusedOption.name === "bet_id") {
+      const user = await prisma.user.findUnique({ where: { discordId: interaction.user.id } })
+      if (!user) { await interaction.respond([]); return }
       const bets = await prisma.bet.findMany({
-        where: { status: "pending" },
+        where: { status: "pending", userId: user.id },
         include: { match: true, user: { select: { username: true } } },
         orderBy: { createdAt: "asc" },
         take: 25,
@@ -597,6 +617,18 @@ async function handleAdmin(
         break
       case "bet-other":
         await handleAdminBetOther(interaction)
+        break
+      case "check-list":
+        await handleAdminCheckList(interaction)
+        break
+      case "check-win":
+        await handleAdminCheckWin(interaction)
+        break
+      case "check-loss":
+        await handleAdminCheckLoss(interaction)
+        break
+      case "check-stop":
+        await handleAdminCheckStop(interaction)
         break
     }
   } catch (error) {
@@ -887,6 +919,7 @@ async function handleBetPlace(
     const betType = interaction.options.getString("type", true)
     const prediction = interaction.options.getString("prediction", true)
     const amount = interaction.options.getNumber("amount", true)
+    const manualOdds = interaction.options.getNumber("odds", false)
 
     if (!user) return
 
@@ -998,6 +1031,10 @@ async function handleBetPlace(
         if (parts[0] === "H") predictionText = `角球大 ${parts[1]}`
         else if (parts[0] === "L") predictionText = `角球細 ${parts[1]}`
       }
+    }
+
+    if (manualOdds !== null) {
+      betOdds = manualOdds
     }
 
     const typeLabels: Record<string, string> = {
@@ -1656,9 +1693,13 @@ async function handleHelp(
   const generalCommands = [
     "**`/login <username> <password>`** — 登入或註冊帳號",
     "**`/stat`** — 查詢個人下注統計與累計盈虧",
-    "**`/bet place <prediction> <amount>`** — 對比賽下注（6 種玩法：主客和、讓球、讓球主客和、入球大細、角球讓球、角球大細）",
+    "**`/bet place <prediction> <amount> [odds]`** — 對比賽下注（6 種玩法：主客和、讓球、讓球主客和、入球大細、角球讓球、角球大細）",
     "**`/bet other <odds> <amount> [prediction]`** — 手動輸入賠率下注",
     "**`/bet history [page]`** — 查看個人下注紀錄",
+    "**`/check list`** — 查看你的 pending 下注",
+    "**`/check win <bet_id>`** — 手動標記你的下注為獲勝",
+    "**`/check loss <bet_id>`** — 手動標記你的下注為失敗",
+    "**`/check stop <bet_id> <refund>`** — 標記你的下注為 check stop，退還部分金額",
     "**`/rank`** — 查看所有用戶排行榜 Top 10",
     "**`/match`** — 從 HKJC 同步世界盃賽程與賠率",
     "**`/help`** — 顯示此說明",
@@ -1671,15 +1712,15 @@ async function handleHelp(
     "**`/admin list`** — 列出所有用戶",
     "**`/admin resetpw <username> <new_password>`** — 重設密碼",
     "**`/admin delete <username>`** — 刪除用戶及下注紀錄",
-    "**`/admin bet-place`** — 代用戶下注（6 種玩法）",
-    "**`/admin bet-other`** — 代用戶手動賠率下注",
+    "**`/admin bet-place <username> ... [odds]`** — 代用戶下注（6 種玩法）",
+    "**`/admin bet-other <username> ...`** — 代用戶手動賠率下注",
+    "**`/admin check-list`** — 列出所有 pending 下注",
+    "**`/admin check-win <bet_id>`** — 將下注標記為獲勝",
+    "**`/admin check-loss <bet_id>`** — 將下注標記為失敗",
+    "**`/admin check-stop <bet_id> <refund>`** — 標記 check stop，退還部分金額",
     "**`/analyst run`** — 對明日比賽執行 DeepSeek AI 分析",
     "**`/analyst match`** — 分析指定單場賽事",
     "**`/match`** — 同步賽程與賠率",
-    "**`/check list`** — 查看所有 pending 下注",
-    "**`/check win <bet_id>`** — 手動標記下注獲勝",
-    "**`/check loss <bet_id>`** — 手動標記下注失敗",
-    "**`/check stop <bet_id> <refund>`** — 標記 check stop，退還部分金額",
     "**`/fix profit`** — 從所有下注重新計算每位用戶的盈虧統計",
   ]
 
@@ -1712,32 +1753,34 @@ async function handleHelp(
 async function handleCheck(
   interaction: ChatInputCommandInteraction
 ): Promise<void> {
-  if (!(await requireAdmin(interaction))) return
+  const user = await requireAuth(interaction)
+  if (!user) return
 
   const subcommand = interaction.options.getSubcommand()
 
   switch (subcommand) {
     case "list":
-      await handleCheckList(interaction)
+      await handleCheckList(interaction, user)
       break
     case "win":
-      await handleCheckWin(interaction)
+      await handleCheckWin(interaction, user)
       break
     case "loss":
-      await handleCheckLoss(interaction)
+      await handleCheckLoss(interaction, user)
       break
     case "stop":
-      await handleCheckStop(interaction)
+      await handleCheckStop(interaction, user)
       break
   }
 }
 
 async function handleCheckList(
-  interaction: ChatInputCommandInteraction
+  interaction: ChatInputCommandInteraction,
+  user: { id: string }
 ): Promise<void> {
   try {
     const pendingBets = await prisma.bet.findMany({
-      where: { status: "pending" },
+      where: { status: "pending", userId: user.id },
       include: {
         match: true,
         user: { select: { username: true } },
@@ -1782,6 +1825,276 @@ async function handleCheckList(
 }
 
 async function handleCheckWin(
+  interaction: ChatInputCommandInteraction,
+  user: { id: string }
+): Promise<void> {
+  try {
+    const betId = interaction.options.getString("bet_id", true)
+
+    const bet = await prisma.bet.findUnique({
+      where: { id: betId },
+      include: { match: true, user: true },
+    })
+
+    if (!bet) {
+      await interaction.reply({
+        content: "❌ 找不到該下注，請確認 ID 是否正確。",
+        ephemeral: true,
+      })
+      return
+    }
+
+    if (bet.userId !== user.id) {
+      await interaction.reply({
+        content: "❌ 你只能判定自己的下注。",
+        ephemeral: true,
+      })
+      return
+    }
+
+    if (bet.status !== "pending") {
+      await interaction.reply({
+        content: `❌ 該下注狀態為 \`${bet.status}\`，無法修改。`,
+        ephemeral: true,
+      })
+      return
+    }
+
+    const profit = bet.amount * (bet.odds - 1)
+
+    await prisma.$transaction([
+      prisma.bet.update({
+        where: { id: bet.id },
+        data: { status: "won" },
+      }),
+      prisma.user.update({
+        where: { id: bet.userId },
+        data: {
+          totalWon: { increment: 1 },
+          totalProfit: { increment: profit },
+        },
+      }),
+    ])
+
+    const embed = new EmbedBuilder()
+      .setColor(0x00ff00)
+      .setTitle("✅ 已標記為獲勝")
+      .addFields(
+        { name: "用戶", value: bet.user.username, inline: true },
+        { name: "比賽", value: `${bet.match.homeTeam} vs ${bet.match.awayTeam}`, inline: true },
+        { name: "盈虧", value: `+$${profit.toFixed(2)}`, inline: true }
+      )
+      .setTimestamp()
+
+    await interaction.reply({ embeds: [embed], ephemeral: true })
+  } catch (error) {
+    console.error("❌ /check win 執行錯誤:", error)
+    await interaction.reply({
+      content: "❌ 操作時發生錯誤，請稍後再試。",
+      ephemeral: true,
+    })
+  }
+}
+
+async function handleCheckLoss(
+  interaction: ChatInputCommandInteraction,
+  user: { id: string }
+): Promise<void> {
+  try {
+    const betId = interaction.options.getString("bet_id", true)
+
+    const bet = await prisma.bet.findUnique({
+      where: { id: betId },
+      include: { match: true, user: true },
+    })
+
+    if (!bet) {
+      await interaction.reply({
+        content: "❌ 找不到該下注，請確認 ID 是否正確。",
+        ephemeral: true,
+      })
+      return
+    }
+
+    if (bet.userId !== user.id) {
+      await interaction.reply({
+        content: "❌ 你只能判定自己的下注。",
+        ephemeral: true,
+      })
+      return
+    }
+
+    if (bet.status !== "pending") {
+      await interaction.reply({
+        content: `❌ 該下注狀態為 \`${bet.status}\`，無法修改。`,
+        ephemeral: true,
+      })
+      return
+    }
+
+    await prisma.$transaction([
+      prisma.bet.update({
+        where: { id: bet.id },
+        data: { status: "lost" },
+      }),
+      prisma.user.update({
+        where: { id: bet.userId },
+        data: {
+          totalLost: { increment: 1 },
+          totalProfit: { decrement: bet.amount },
+        },
+      }),
+    ])
+
+    const embed = new EmbedBuilder()
+      .setColor(0xff0000)
+      .setTitle("❌ 已標記為失敗")
+      .addFields(
+        { name: "用戶", value: bet.user.username, inline: true },
+        { name: "比賽", value: `${bet.match.homeTeam} vs ${bet.match.awayTeam}`, inline: true },
+        { name: "損失", value: `-$${bet.amount.toFixed(2)}`, inline: true }
+      )
+      .setTimestamp()
+
+    await interaction.reply({ embeds: [embed], ephemeral: true })
+  } catch (error) {
+    console.error("❌ /check loss 執行錯誤:", error)
+    await interaction.reply({
+      content: "❌ 操作時發生錯誤，請稍後再試。",
+      ephemeral: true,
+    })
+  }
+}
+
+// ─── /check stop ────────────────────────────────────────────────────────────
+
+async function handleCheckStop(
+  interaction: ChatInputCommandInteraction,
+  user: { id: string }
+): Promise<void> {
+  try {
+    const betId = interaction.options.getString("bet_id", true)
+    const refund = interaction.options.getNumber("refund", true)
+
+    const bet = await prisma.bet.findUnique({
+      where: { id: betId },
+      include: { match: true, user: true },
+    })
+
+    if (!bet) {
+      await interaction.reply({
+        content: "❌ 找不到該下注，請確認 ID 是否正確。",
+        ephemeral: true,
+      })
+      return
+    }
+
+    if (bet.userId !== user.id) {
+      await interaction.reply({
+        content: "❌ 你只能判定自己的下注。",
+        ephemeral: true,
+      })
+      return
+    }
+
+    if (bet.status !== "pending") {
+      await interaction.reply({
+        content: `❌ 該下注狀態為 \`${bet.status}\`，無法修改。`,
+        ephemeral: true,
+      })
+      return
+    }
+
+    const netLoss = bet.amount - refund
+
+    await prisma.$transaction([
+      prisma.bet.update({
+        where: { id: bet.id },
+        data: { status: "lost", refund },
+      }),
+      prisma.user.update({
+        where: { id: bet.userId },
+        data: {
+          totalLost: { increment: 1 },
+          totalProfit: { decrement: netLoss },
+        },
+      }),
+    ])
+
+    const embed = new EmbedBuilder()
+      .setColor(0xff8800)
+      .setTitle("⚠️ 已標記為 Check Stop")
+      .addFields(
+        { name: "用戶", value: bet.user.username, inline: true },
+        { name: "比賽", value: `${bet.match.homeTeam} vs ${bet.match.awayTeam}`, inline: true },
+        { name: "下注額", value: `$${bet.amount.toFixed(2)}`, inline: true },
+        { name: "退款", value: `+$${refund.toFixed(2)}`, inline: true },
+        { name: "淨虧損", value: `-$${netLoss.toFixed(2)}`, inline: true }
+      )
+      .setTimestamp()
+
+    await interaction.reply({ embeds: [embed], ephemeral: true })
+  } catch (error) {
+    console.error("❌ /check stop 執行錯誤:", error)
+    await interaction.reply({
+      content: "❌ 操作時發生錯誤，請稍後再試。",
+      ephemeral: true,
+    })
+  }
+}
+
+// ─── /admin check ────────────────────────────────────────────────────────────
+
+async function handleAdminCheckList(
+  interaction: ChatInputCommandInteraction
+): Promise<void> {
+  try {
+    const pendingBets = await prisma.bet.findMany({
+      where: { status: "pending" },
+      include: {
+        match: true,
+        user: { select: { username: true } },
+      },
+      orderBy: { createdAt: "asc" },
+    })
+
+    if (pendingBets.length === 0) {
+      await interaction.reply({
+        content: "✅ 目前沒有 pending 的下注。",
+        ephemeral: true,
+      })
+      return
+    }
+
+    const lines = pendingBets.map((b) => {
+      const match = b.match
+      const scoreText = match.result || "尚無比分"
+      const matchStr = `${match.homeTeam} vs ${match.awayTeam} (${scoreText})`
+      return (
+        `**ID:** \`${b.id}\`\n` +
+        `　👤 ${b.user.username} | 🏟 ${matchStr}\n` +
+        `　🎯 玩法: ${b.betType} | 預測: ${b.prediction} | 賠率: ${b.odds.toFixed(2)} | 金額: $${b.amount.toLocaleString()}`
+      )
+    })
+
+    const embed = new EmbedBuilder()
+      .setColor(0xffaa00)
+      .setTitle(`📋 Pending 下注 (${pendingBets.length} 筆)`)
+      .setDescription(lines.join("\n\n"))
+      .setFooter({ text: "使用 /admin check-win <id> 或 /admin check-loss <id> 判定輸贏" })
+      .setTimestamp()
+
+    await interaction.reply({ embeds: [embed], ephemeral: true })
+  } catch (error) {
+    console.error("❌ /admin check-list 執行錯誤:", error)
+    await interaction.reply({
+      content: "❌ 查詢下注時發生錯誤，請稍後再試。",
+      ephemeral: true,
+    })
+  }
+}
+
+async function handleAdminCheckWin(
   interaction: ChatInputCommandInteraction
 ): Promise<void> {
   try {
@@ -1836,7 +2149,7 @@ async function handleCheckWin(
 
     await interaction.reply({ embeds: [embed], ephemeral: true })
   } catch (error) {
-    console.error("❌ /check win 執行錯誤:", error)
+    console.error("❌ /admin check-win 執行錯誤:", error)
     await interaction.reply({
       content: "❌ 操作時發生錯誤，請稍後再試。",
       ephemeral: true,
@@ -1844,7 +2157,7 @@ async function handleCheckWin(
   }
 }
 
-async function handleCheckLoss(
+async function handleAdminCheckLoss(
   interaction: ChatInputCommandInteraction
 ): Promise<void> {
   try {
@@ -1897,7 +2210,7 @@ async function handleCheckLoss(
 
     await interaction.reply({ embeds: [embed], ephemeral: true })
   } catch (error) {
-    console.error("❌ /check loss 執行錯誤:", error)
+    console.error("❌ /admin check-loss 執行錯誤:", error)
     await interaction.reply({
       content: "❌ 操作時發生錯誤，請稍後再試。",
       ephemeral: true,
@@ -1905,9 +2218,7 @@ async function handleCheckLoss(
   }
 }
 
-// ─── /check stop ────────────────────────────────────────────────────────────
-
-async function handleCheckStop(
+async function handleAdminCheckStop(
   interaction: ChatInputCommandInteraction
 ): Promise<void> {
   try {
@@ -1965,7 +2276,7 @@ async function handleCheckStop(
 
     await interaction.reply({ embeds: [embed], ephemeral: true })
   } catch (error) {
-    console.error("❌ /check stop 執行錯誤:", error)
+    console.error("❌ /admin check-stop 執行錯誤:", error)
     await interaction.reply({
       content: "❌ 操作時發生錯誤，請稍後再試。",
       ephemeral: true,
