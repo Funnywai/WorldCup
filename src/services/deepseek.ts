@@ -98,3 +98,48 @@ export async function generateMatchAnalysis(
 
   return response.choices[0]?.message?.content || "分析生成失敗，請稍後再試。"
 }
+
+/**
+ * 透過 AI 查詢兩隊綜合資訊（排名、近期成績、歷史對戰、關鍵球員等），
+ * 取代直接從本地資料庫讀取有限的歷史對戰數據。
+ * 回傳結構化繁體中文字串，可直接作為 generateMatchAnalysis 的 historicalContext。
+ */
+export async function fetchTeamResearch(
+  homeTeam: string,
+  awayTeam: string
+): Promise<string> {
+  const prompt = `請簡要提供以下兩隊的綜合資訊（用於後續足球賽事分析，使用繁體中文）：
+
+主隊：${homeTeam}
+客隊：${awayTeam}
+
+請包括：
+1. ${homeTeam} 的 FIFA 世界排名（最新）
+2. ${awayTeam} 的 FIFA 世界排名（最新）
+3. ${homeTeam} 2026 世界盃成績 
+4. ${awayTeam} 2026 世界盃成績
+5. 兩隊過往歷史交鋒紀錄與勝負
+6. ${homeTeam} 的 2-3 名關鍵球員及當前狀態
+7. ${awayTeam} 的 2-3 名關鍵球員及當前狀態
+8. 兩隊在 2026 世界盃的所在小組及晉級形勢（若已知）
+
+若無 2026 確切數據，請提供截至你知識截止日的最新資訊，並明確標註年份。
+請以條列式簡潔回答，每項 1-3 行，總長度控制在 1500 字以內。`
+
+  try {
+    const response = await deepseek.chat.completions.create({
+      model: "deepseek-v4-flash",
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0.3,
+      max_tokens: 4096,
+    })
+
+    return response.choices[0]?.message?.content || ""
+  } catch (error) {
+    console.error(
+      `⚠ fetchTeamResearch 失敗 (${homeTeam} vs ${awayTeam}):`,
+      error
+    )
+    return ""
+  }
+}
